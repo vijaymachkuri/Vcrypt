@@ -1,6 +1,6 @@
 Add-Type -AssemblyName System.Drawing
-$pngPath = 'c:\Users\vijay\Desktop\securepro\SecureDock.UI\icon.png'
-$icoPath = 'c:\Users\vijay\Desktop\securepro\SecureDock.UI\icon.ico'
+$pngPath = 'c:\Users\vijay\Desktop\securepro\Vcrypt.UI\icon.png'
+$icoPath = 'c:\Users\vijay\Desktop\securepro\Vcrypt.UI\icon.ico'
 
 $img = [System.Drawing.Image]::FromFile($pngPath)
 $resized = [System.Drawing.Bitmap]::new($img, 256, 256)
