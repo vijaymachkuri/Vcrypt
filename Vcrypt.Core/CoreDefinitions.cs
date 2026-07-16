@@ -4,16 +4,19 @@ using System.Threading.Tasks;
 
 namespace Vcrypt.Core.Models
 {
-    public class EncryptedFileModel
+    public class EncryptedItemModel
     {
-        public string OriginalName { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public bool IsFolder { get; set; }
         public long Size { get; set; }
         public string BlobId { get; set; } = string.Empty;
+        public DateTime CreatedAt { get; set; } = DateTime.Now;
+        public List<EncryptedItemModel> Children { get; set; } = new();
     }
 
     public class VaultIndex
     {
-        public List<EncryptedFileModel> Files { get; set; } = new List<EncryptedFileModel>();
+        public EncryptedItemModel Root { get; set; } = new EncryptedItemModel { Name = "Root", IsFolder = true };
     }
 
     public class UsbDriveEventArgs : EventArgs
@@ -37,7 +40,10 @@ namespace Vcrypt.Core.Interfaces
         Task InitializeNewVaultAsync(string password);
         Task<bool> UnlockAsync(string password);
         void Lock();
-        Task EncryptFileAsync(string sourcePath);
+        Task EncryptFileAsync(string sourcePath, string targetParentPath = "");
+        Task DecryptFileAsync(EncryptedItemModel file, string destinationDirectory);
+        Task DeleteItemAsync(EncryptedItemModel item);
+        Task CreateFolderAsync(string folderName, string parentPath = "");
     }
 
     public interface IUsbMonitorService : IDisposable
@@ -47,10 +53,17 @@ namespace Vcrypt.Core.Interfaces
         void StartMonitoring();
     }
 
+    public class VaultCapacityInfo
+    {
+        public long TotalBytes { get; set; }
+        public long FreeBytes { get; set; }
+    }
+
     public interface IPartitionManager
     {
         Task<string?> FormatAndLockAsync(string driveLetter, int publicMB, string fileSystem, string passwordHash, IProgress<string>? progressText = null, IProgress<int>? progressValue = null);
-        Task<string?> MountVaultAsync();
-        Task<bool> UnmountVaultAsync();
+        Task<string?> MountVaultAsync(string publicDriveLetter);
+        Task<bool> UnmountVaultAsync(string publicDriveLetter);
+        Task<VaultCapacityInfo?> GetVaultCapacityAsync(string publicDriveLetter);
     }
 }

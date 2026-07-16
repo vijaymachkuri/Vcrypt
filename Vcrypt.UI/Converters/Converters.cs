@@ -30,4 +30,24 @@ namespace Vcrypt.UI.Converters
             throw new NotImplementedException();
         }
     }
+
+    public class DoubleToStarGridLengthConverter : IValueConverter
+    {
+        public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+        {
+            if (value is double val)
+            {
+                if (val <= 0 || double.IsNaN(val) || double.IsInfinity(val))
+                    return new GridLength(0, GridUnitType.Star);
+                
+                return new GridLength(val, GridUnitType.Star);
+            }
+            return new GridLength(0, GridUnitType.Star);
+        }
+
+        public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+        {
+            throw new NotImplementedException();
+        }
+    }
 }

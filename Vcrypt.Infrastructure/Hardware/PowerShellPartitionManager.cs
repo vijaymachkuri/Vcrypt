@@ -8,6 +8,9 @@ namespace Vcrypt.Infrastructure.Hardware
 {
     public class PowerShellPartitionManager : IPartitionManager
     {
+        public PowerShellPartitionManager()
+        {
+        }
         private async Task RunDiskPartScriptAsync(string scriptContent)
         {
             var tempScriptPath = Path.GetTempFileName();
@@ -48,67 +51,48 @@ namespace Vcrypt.Infrastructure.Hardware
 
         public async Task<string?> FormatAndLockAsync(string driveLetter, int publicMB, string fileSystem, string passwordHash, IProgress<string>? progressText = null, IProgress<int>? progressValue = null)
         {
-            var diskScript = $@"
+            var formatScript = $@"
+$ErrorActionPreference = 'Stop'
 $p = Get-Partition -DriveLetter '{driveLetter.TrimEnd(':')}' -ErrorAction SilentlyContinue
-if ($null -ne $p) {{
-    Write-Output $p.DiskNumber
-}} else {{
-    $usb = Get-Disk | Where-Object BusType -eq 'USB'
-    if ($usb -is [array]) {{
-        if ($usb.Count -gt 1) {{ throw 'Multiple USB drives detected. Please unplug all other USB drives before formatting to prevent data loss.' }}
-        Write-Output $usb[0].Number
-    }} else {{
-        if ($null -ne $usb) {{ Write-Output $usb.Number }} else {{ throw 'No USB drives detected to format.' }}
-    }}
-}}";
-            var disk = await RunPowerShellAsync(diskScript);
-            if (string.IsNullOrWhiteSpace(disk)) throw new Exception("Could not identify physical disk.");
+if ($null -eq $p) {{ throw 'Could not identify the disk.' }}
+$disk = $p.DiskNumber
 
-            progressText?.Report($"Identified Disk {disk}");
-            progressValue?.Report(10);
-            
-            // Disable Windows Automount and stop the Shell Hardware Detection service
-            // This is the ULTIMATE fix to physically prevent Windows Explorer from showing
-            // the "You need to format the disk" popup while we are wiping and formatting!
-            await RunPowerShellAsync("mountvol /N; Stop-Service -Name ShellHWDetection -Force -ErrorAction SilentlyContinue");
-            try
-            {
-                progressText?.Report("Cleaning and Initializing Disk...");
-                progressValue?.Report(20);
-            
-            // Strip all drive letters first to prevent Windows from complaining when we wipe the disk!
-            await RunPowerShellAsync($"Get-Partition -DiskNumber {disk.Trim()} -ErrorAction SilentlyContinue | Where-Object DriveLetter | ForEach-Object {{ Remove-PartitionAccessPath -InputObject $_ -AccessPath ($_.DriveLetter + ':\\') }}");
-            
-            await RunPowerShellAsync($"Clear-Disk -Number {disk.Trim()} -RemoveData -Confirm:$false");
-            await RunPowerShellAsync($"Initialize-Disk -Number {disk.Trim()} -PartitionStyle MBR -ErrorAction SilentlyContinue");
+mountvol /N | Out-Null
+Stop-Service -Name ShellHWDetection -Force -ErrorAction SilentlyContinue
 
-            progressText?.Report($"Creating Public {fileSystem} Partition...");
-            progressValue?.Report(40);
-            await RunPowerShellAsync($"New-Partition -DiskNumber {disk.Trim()} -Size {publicMB}MB -AssignDriveLetter | Format-Volume -FileSystem {fileSystem} -NewFileSystemLabel 'Public' -Force");
+try {{
+    Get-Partition -DiskNumber $disk -ErrorAction SilentlyContinue | Where-Object DriveLetter | ForEach-Object {{ Remove-PartitionAccessPath -InputObject $_ -AccessPath ($_.DriveLetter + ':\') }}
+    Clear-Disk -Number $disk -RemoveData -Confirm:$false
+    Initialize-Disk -Number $disk -PartitionStyle MBR -ErrorAction SilentlyContinue
+    New-Partition -DiskNumber $disk -Size {publicMB}MB -AssignDriveLetter | Format-Volume -FileSystem {fileSystem} -NewFileSystemLabel 'Public' -Force | Out-Null
+    
+    New-Partition -DiskNumber $disk -UseMaximumSize -AssignDriveLetter | Format-Volume -FileSystem NTFS -NewFileSystemLabel 'SecureVault' -Force | Out-Null
+    Start-Sleep -Seconds 2
+    $dl = (Get-Partition -DiskNumber $disk -PartitionNumber 2).DriveLetter
+    if ($dl) {{ Remove-PartitionAccessPath -DiskNumber $disk -PartitionNumber 2 -AccessPath ($dl + ':\') }}
+    Get-Partition -DiskNumber $disk -PartitionNumber 2 | Set-Partition -MbrType 23 | Out-Null
+    Start-Sleep -Seconds 2
+}} finally {{
+    mountvol /E | Out-Null
+    Start-Service -Name ShellHWDetection -ErrorAction SilentlyContinue
+}}
 
-            progressText?.Report("Creating SecureVault Partition...");
-            progressValue?.Report(60);
-            await RunPowerShellAsync($"New-Partition -DiskNumber {disk.Trim()} -UseMaximumSize -AssignDriveLetter | Format-Volume -FileSystem NTFS -NewFileSystemLabel 'SecureVault' -Force; Start-Sleep -Seconds 2; $dl = (Get-Partition -DiskNumber {disk.Trim()} -PartitionNumber 2).DriveLetter; if ($dl) {{ Remove-PartitionAccessPath -DiskNumber {disk.Trim()} -PartitionNumber 2 -AccessPath ($dl + ':\\') }}; Get-Partition -DiskNumber {disk.Trim()} -PartitionNumber 2 | Set-Partition -MbrType 23");
+$newLetter = (Get-Partition -DiskNumber $disk -PartitionNumber 1).DriveLetter
+if (-not $newLetter) {{ throw 'Could not find the drive letter after formatting.' }}
+
+$sigPath = $newLetter + ':\.Vcrypt'
+Set-Content -Path $sigPath -Value '{passwordHash}' -Force
+Write-Output $newLetter
+";
+            progressText?.Report($"Formatting Disk (this may take a few moments)...");
+            progressValue?.Report(50);
             
-                progressText?.Report("Finalizing Mounts...");
-                progressValue?.Report(85);
-                
-                await Task.Delay(2000); // Give Windows time to settle
-            }
-            finally
-            {
-                // ALWAYS re-enable Automount and restart the Shell Hardware Detection service!
-                await RunPowerShellAsync("mountvol /E; Start-Service -Name ShellHWDetection -ErrorAction SilentlyContinue");
-            }
+            var newLetterFull = await RunPowerShellAsync(formatScript);
+            if (string.IsNullOrWhiteSpace(newLetterFull)) throw new Exception("Could not find the drive letter after formatting.");
             
-            
-            var getLetterScript = "(Get-Volume -FileSystemLabel 'Public' -ErrorAction SilentlyContinue | Select-Object -First 1).DriveLetter";
-            var newLetter = await RunPowerShellAsync(getLetterScript);
-            
-            if (string.IsNullOrWhiteSpace(newLetter)) throw new Exception("Could not find the drive letter after formatting.");
-            
-            var sigPath = Path.Combine(newLetter.Trim() + ":\\", ".Vcrypt");
-            File.WriteAllText(sigPath, passwordHash);
+            var lines = newLetterFull.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            var actualLetter = lines[lines.Length - 1].Trim();
+            if (string.IsNullOrWhiteSpace(actualLetter)) throw new Exception("Could not find the drive letter after formatting.");
 
             try
             {
@@ -116,7 +100,7 @@ if ($null -ne $p) {{
                 var currentExe = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName;
                 if (!string.IsNullOrEmpty(currentExe) && currentExe.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
                 {
-                    var destExe = Path.Combine(newLetter.Trim() + ":\\", "Vcrypt.exe");
+                    var destExe = Path.Combine(actualLetter + ":\\", "Vcrypt.exe");
                     File.Copy(currentExe, destExe, overwrite: true);
                 }
             }
@@ -128,78 +112,68 @@ if ($null -ne $p) {{
 
             progressText?.Report("Format Complete!");
             progressValue?.Report(95);
-            return newLetter.Trim() + ":";
+            return actualLetter + ":";
         }
 
-        public async Task<string?> MountVaultAsync()
+        public async Task<string?> MountVaultAsync(string publicDriveLetter)
         {
             try
             {
-                var script = @"
-$disk = Get-Disk | Where-Object BusType -eq 'USB' | Select-Object -First 1
-if (-not $disk) { Write-Output ''; exit }
+                var script = $@"
+$p = Get-Partition -DriveLetter '{publicDriveLetter.TrimEnd(':')}' -ErrorAction SilentlyContinue
+if (-not $p) {{ throw 'Disk not found.' }}
+$diskNumber = $p.DiskNumber
 
-$partition = Get-Partition -DiskNumber $disk.Number | Where-Object PartitionNumber -eq 2
-if (-not $partition) { Write-Output ''; exit }
+$partition = Get-Partition -DiskNumber $diskNumber | Where-Object PartitionNumber -eq 2
+if (-not $partition) {{ Write-Output ''; exit }}
 
 # Unhide the partition (Change type to 0x07 NTFS)
 Set-Partition -InputObject $partition -MbrType 7 | Out-Null
 Start-Sleep -Seconds 2
 
-$volume = Get-Volume -FileSystemLabel 'SecureVault' -ErrorAction SilentlyContinue
-if (-not $volume) { Write-Output ''; exit }
+$mountPath = 'C:\ProgramData\Vcrypt\Mounts\' + $diskNumber
+if (-not (Test-Path $mountPath)) {{
+    New-Item -ItemType Directory -Force -Path $mountPath | Out-Null
+}}
 
-if ($volume.DriveLetter) {
-    Write-Output ($volume.DriveLetter + ':\')
-    exit
-}
-
-# Find an available drive letter starting from Z down to M
-$usedLetters = (Get-Volume).DriveLetter
-$availableLetters = 90..77 | ForEach-Object { [char]$_ } | Where-Object { $usedLetters -notcontains $_ }
-if ($availableLetters.Count -eq 0) { Write-Output ''; exit }
-
-$newLetter = $availableLetters[0]
-$volume | Get-Partition | Set-Partition -NewDriveLetter $newLetter | Out-Null
-Write-Output ($newLetter + ':\')
+Add-PartitionAccessPath -DiskNumber $diskNumber -PartitionNumber 2 -AccessPath $mountPath
+Write-Output $mountPath
 ";
                 var drivePath = await RunPowerShellAsync(script);
-                drivePath = drivePath?.Trim();
-                
-                if (string.IsNullOrEmpty(drivePath)) return null;
-                return drivePath;
+                if (string.IsNullOrWhiteSpace(drivePath)) return null;
+                var lines = drivePath.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                return lines[lines.Length - 1].Trim();
             }
-            catch
+            catch (Exception ex)
             {
+                System.Diagnostics.Debug.WriteLine(ex.Message);
                 return null;
             }
         }
 
-        public async Task<bool> UnmountVaultAsync()
+        public async Task<bool> UnmountVaultAsync(string publicDriveLetter)
         {
             try
             {
-                var script = @"
-$volume = Get-Volume -FileSystemLabel 'SecureVault' -ErrorAction SilentlyContinue
-if ($volume) {
-    $partition = $volume | Get-Partition
-    if ($volume.DriveLetter) {
-        Remove-PartitionAccessPath -InputObject $partition -AccessPath ($volume.DriveLetter + ':\')
-    }
+                var script = $@"
+$p = Get-Partition -DriveLetter '{publicDriveLetter.TrimEnd(':')}' -ErrorAction SilentlyContinue
+if (-not $p) {{ throw 'Disk not found.' }}
+$diskNumber = $p.DiskNumber
+
+$partition = Get-Partition -DiskNumber $diskNumber | Where-Object PartitionNumber -eq 2
+if ($partition) {{
+    $mountPath = 'C:\ProgramData\Vcrypt\Mounts\' + $diskNumber
+    if (Test-Path $mountPath) {{
+        Remove-PartitionAccessPath -DiskNumber $diskNumber -PartitionNumber 2 -AccessPath $mountPath -ErrorAction SilentlyContinue
+    }}
     Set-Partition -InputObject $partition -MbrType 23 | Out-Null
-} else {
-    $disk = Get-Disk | Where-Object BusType -eq 'USB' | Select-Object -First 1
-    if ($disk) {
-        $partition = Get-Partition -DiskNumber $disk.Number | Where-Object PartitionNumber -eq 2
-        if ($partition -and $partition.MbrType -ne 23) {
-            Set-Partition -InputObject $partition -MbrType 23 | Out-Null
-        }
-    }
-}
+}}
 Write-Output 'OK'
 ";
                 var result = await RunPowerShellAsync(script);
-                return result?.Trim() == "OK";
+                if (string.IsNullOrWhiteSpace(result)) return false;
+                var lines = result.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                return lines[lines.Length - 1].Trim() == "OK";
             }
             catch
             {
@@ -207,10 +181,57 @@ Write-Output 'OK'
             }
         }
 
-        private async Task<string> RunPowerShellAsync(string command)
+        public async Task<VaultCapacityInfo?> GetVaultCapacityAsync(string publicDriveLetter)
         {
-            var commandWithNoProgress = "$ProgressPreference = 'SilentlyContinue';\n" + command;
-            var bytes = System.Text.Encoding.Unicode.GetBytes(commandWithNoProgress);
+            try
+            {
+                var script = $@"
+$p = Get-Partition -DriveLetter '{publicDriveLetter.TrimEnd(':')}' -ErrorAction SilentlyContinue
+if (-not $p) {{ exit }}
+$diskNumber = $p.DiskNumber
+$mountPath = 'C:\ProgramData\Vcrypt\Mounts\' + $diskNumber
+$vol = $null
+for ($i=0; $i -lt 10; $i++) {{
+    $vol = Get-Partition -DiskNumber $diskNumber -PartitionNumber 2 | Get-Volume -ErrorAction SilentlyContinue
+    if ($vol) {{ break }}
+    Start-Sleep -Milliseconds 500
+}}
+if ($vol) {{
+    Write-Output $vol.Size
+    Write-Output $vol.SizeRemaining
+}}
+";
+                var output = await RunPowerShellAsync(script);
+                var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                if (lines.Length >= 2 && long.TryParse(lines[0], out long total) && long.TryParse(lines[1], out long remaining))
+                {
+                    return new VaultCapacityInfo { TotalBytes = total, FreeBytes = remaining };
+                }
+                return null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private async Task<string> RunPowerShellAsync(string command, bool requireAdmin = true)
+        {
+            var outputFile = Path.GetTempFileName();
+            var errorFile = Path.GetTempFileName();
+            
+            var commandWithNoProgress = $"$ProgressPreference = 'SilentlyContinue'; {command}";
+            // Wrapper script to run the command and redirect output to files
+            var wrapperScript = $@"
+try {{
+    & {{
+        {commandWithNoProgress}
+    }} | Out-File -FilePath '{outputFile}' -Encoding UTF8
+}} catch {{
+    $_.Exception.Message | Out-File -FilePath '{errorFile}' -Encoding UTF8
+}}
+";
+            var bytes = System.Text.Encoding.Unicode.GetBytes(wrapperScript);
             var encoded = Convert.ToBase64String(bytes);
 
             using var process = new Process
@@ -220,21 +241,28 @@ Write-Output 'OK'
                     FileName = "powershell.exe",
                     Arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encoded}",
                     UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true
+                    Verb = "",
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Hidden
                 }
             };
 
             process.Start();
-            
-            var outputTask = process.StandardOutput.ReadToEndAsync();
-            var errorTask = process.StandardError.ReadToEndAsync();
-            
             await process.WaitForExitAsync();
             
-            var output = await outputTask;
-            var error = await errorTask;
+            string output = "";
+            string error = "";
+            
+            if (File.Exists(outputFile))
+            {
+                output = await File.ReadAllTextAsync(outputFile);
+                File.Delete(outputFile);
+            }
+            if (File.Exists(errorFile))
+            {
+                error = await File.ReadAllTextAsync(errorFile);
+                File.Delete(errorFile);
+            }
             
             if (!string.IsNullOrWhiteSpace(error)) 
             {

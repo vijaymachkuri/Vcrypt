@@ -1,150 +1,265 @@
-using Vcrypt.Core.Interfaces;
-using Vcrypt.Core.Models;
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Vcrypt.Core.Interfaces;
+using Vcrypt.Core.Models;
 
 namespace Vcrypt.Core.Services
 {
     public class AesEncryptionProvider : IEncryptionProvider
     {
-        private const int KEY_SIZE = 32;
-        private const int IV_SIZE = 16;
-        private const int SALT_SIZE = 16;
-        private const int ITERATIONS = 100_000;
-
         private string _vaultPath = string.Empty;
-        private string _indexPath = string.Empty;
-        private byte[]? _key;
+        private byte[] _encryptionKey = Array.Empty<byte>();
+        private readonly byte[] _salt = new byte[] { 0x56, 0x63, 0x72, 0x79, 0x70, 0x74, 0x53, 0x61, 0x6c, 0x74 };
 
+        public bool IsUnlocked { get; private set; }
         public VaultIndex? CurrentIndex { get; private set; }
-        public bool IsUnlocked => _key != null;
+        public string VaultPath => _vaultPath;
+        public byte[] EncryptionKey => _encryptionKey;
 
         public void Initialize(string vaultPath)
         {
             _vaultPath = vaultPath;
-            _indexPath = Path.Combine(_vaultPath, "index.enc");
-        }
-
-        private byte[] DeriveKey(string password, byte[] salt)
-        {
-            return Rfc2898DeriveBytes.Pbkdf2(password, salt, ITERATIONS, HashAlgorithmName.SHA256, KEY_SIZE);
+            if (!_vaultPath.EndsWith("\\") && !_vaultPath.EndsWith("/"))
+            {
+                _vaultPath += "\\";
+            }
         }
 
         public async Task InitializeNewVaultAsync(string password)
         {
-            var salt = new byte[SALT_SIZE];
-            RandomNumberGenerator.Fill(salt);
-            _key = DeriveKey(password, salt);
+            DeriveKey(password);
             CurrentIndex = new VaultIndex();
-            await SaveIndexAsync(salt);
+            await SaveIndexAsync();
+            IsUnlocked = true;
         }
 
         public async Task<bool> UnlockAsync(string password)
         {
-            if (!File.Exists(_indexPath)) return false;
-
+            DeriveKey(password);
             try
             {
-                using var fs = new FileStream(_indexPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                var salt = new byte[SALT_SIZE];
-                var iv = new byte[IV_SIZE];
-                int saltRead = await fs.ReadAsync(salt, 0, SALT_SIZE);
-                int ivRead = await fs.ReadAsync(iv, 0, IV_SIZE);
+                var indexPath = Path.Combine(_vaultPath, ".index.json");
+                if (!File.Exists(indexPath)) return false;
+
+                byte[] encryptedIndex = await File.ReadAllBytesAsync(indexPath);
+                byte[] decryptedIndex = DecryptBytes(encryptedIndex);
                 
-                if (saltRead != SALT_SIZE || ivRead != IV_SIZE) return false;
-
-                var tempKey = DeriveKey(password, salt);
-
-                using var aes = Aes.Create();
-                aes.Key = tempKey;
-                aes.IV = iv;
-                aes.Mode = CipherMode.CBC;
-
-                using var cs = new CryptoStream(fs, aes.CreateDecryptor(), CryptoStreamMode.Read);
-                using var sr = new StreamReader(cs);
-                var json = await sr.ReadToEndAsync();
-
+                string json = System.Text.Encoding.UTF8.GetString(decryptedIndex);
                 CurrentIndex = JsonSerializer.Deserialize<VaultIndex>(json);
-                _key = tempKey; 
+                IsUnlocked = true;
                 return true;
             }
             catch
             {
+                IsUnlocked = false;
                 return false;
             }
         }
 
         public void Lock()
         {
-            _key = null;
+            IsUnlocked = false;
             CurrentIndex = null;
+            Array.Clear(_encryptionKey, 0, _encryptionKey.Length);
         }
 
-        private async Task SaveIndexAsync(byte[]? existingSalt = null)
+        private void DeriveKey(string password)
         {
-            if (!IsUnlocked || _key == null) throw new InvalidOperationException("Vault is locked.");
-
-            byte[] salt = existingSalt ?? new byte[SALT_SIZE];
-            if (existingSalt == null && File.Exists(_indexPath))
+            using (var deriveBytes = new Rfc2898DeriveBytes(password, _salt, 100000, HashAlgorithmName.SHA256))
             {
-                using var fsRead = new FileStream(_indexPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                await fsRead.ReadAsync(salt, 0, SALT_SIZE);
+                _encryptionKey = deriveBytes.GetBytes(32); // 256 bits
             }
-
-            var iv = new byte[IV_SIZE];
-            RandomNumberGenerator.Fill(iv);
-
-            using var aes = Aes.Create();
-            aes.Key = _key;
-            aes.IV = iv;
-            aes.Mode = CipherMode.CBC;
-
-            using var fs = new FileStream(_indexPath, FileMode.Create, FileAccess.Write, FileShare.None);
-            await fs.WriteAsync(salt, 0, SALT_SIZE);
-            await fs.WriteAsync(iv, 0, IV_SIZE);
-
-            using var cs = new CryptoStream(fs, aes.CreateEncryptor(), CryptoStreamMode.Write);
-            using var sw = new StreamWriter(cs);
-            var json = JsonSerializer.Serialize(CurrentIndex);
-            await sw.WriteAsync(json);
         }
 
-        public async Task EncryptFileAsync(string sourcePath)
+        public async Task SaveIndexAsync()
         {
-            if (!IsUnlocked || _key == null || CurrentIndex == null) throw new InvalidOperationException("Vault is locked.");
+            if (CurrentIndex == null) return;
+            string json = JsonSerializer.Serialize(CurrentIndex);
+            byte[] bytes = System.Text.Encoding.UTF8.GetBytes(json);
+            byte[] encrypted = EncryptBytes(bytes);
+            await File.WriteAllBytesAsync(Path.Combine(_vaultPath, ".index.json"), encrypted);
+        }
 
-            var fileInfo = new FileInfo(sourcePath);
-            var blobId = Guid.NewGuid().ToString("N");
-            var outPath = Path.Combine(_vaultPath, blobId);
-
-            var iv = new byte[IV_SIZE];
-            RandomNumberGenerator.Fill(iv);
-
-            using var aes = Aes.Create();
-            aes.Key = _key;
-            aes.IV = iv;
-            aes.Mode = CipherMode.CBC;
-
-            using (var fsOut = new FileStream(outPath, FileMode.Create, FileAccess.Write, FileShare.None))
+        private byte[] EncryptBytes(byte[] clearText)
+        {
+            using (Aes aes = Aes.Create())
             {
-                await fsOut.WriteAsync(iv, 0, IV_SIZE);
-                using var cs = new CryptoStream(fsOut, aes.CreateEncryptor(), CryptoStreamMode.Write);
-                using var fsIn = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                
-                await fsIn.CopyToAsync(cs, 81920); 
+                aes.Key = _encryptionKey;
+                aes.GenerateIV();
+                using (MemoryStream ms = new MemoryStream())
+                {
+                    ms.Write(aes.IV, 0, aes.IV.Length);
+                    using (CryptoStream cs = new CryptoStream(ms, aes.CreateEncryptor(), CryptoStreamMode.Write))
+                    {
+                        cs.Write(clearText, 0, clearText.Length);
+                        cs.FlushFinalBlock();
+                    }
+                    return ms.ToArray();
+                }
+            }
+        }
+
+        private byte[] DecryptBytes(byte[] cipherText)
+        {
+            using (Aes aes = Aes.Create())
+            {
+                aes.Key = _encryptionKey;
+                byte[] iv = new byte[aes.BlockSize / 8];
+                Array.Copy(cipherText, 0, iv, 0, iv.Length);
+                aes.IV = iv;
+
+                using (MemoryStream ms = new MemoryStream())
+                {
+                    using (CryptoStream cs = new CryptoStream(new MemoryStream(cipherText, iv.Length, cipherText.Length - iv.Length), aes.CreateDecryptor(), CryptoStreamMode.Read))
+                    {
+                        cs.CopyTo(ms);
+                    }
+                    return ms.ToArray();
+                }
+            }
+        }
+
+        public async Task EncryptFileAsync(string sourcePath, string targetParentPath = "")
+        {
+            if (!IsUnlocked || CurrentIndex == null) throw new Exception("Vault is locked");
+
+            string blobId = Guid.NewGuid().ToString("N");
+            string destPath = Path.Combine(_vaultPath, blobId + ".vcrypt");
+
+            using (Aes aes = Aes.Create())
+            {
+                aes.Key = _encryptionKey;
+                aes.GenerateIV();
+
+                using (FileStream fsOut = new FileStream(destPath, FileMode.Create))
+                {
+                    fsOut.Write(aes.IV, 0, aes.IV.Length);
+                    using (CryptoStream cs = new CryptoStream(fsOut, aes.CreateEncryptor(), CryptoStreamMode.Write))
+                    using (FileStream fsIn = new FileStream(sourcePath, FileMode.Open, FileAccess.Read))
+                    {
+                        await fsIn.CopyToAsync(cs);
+                    }
+                }
             }
 
-            CurrentIndex.Files.Add(new EncryptedFileModel
+            var item = new EncryptedItemModel
             {
-                OriginalName = fileInfo.Name,
-                Size = fileInfo.Length,
+                Name = Path.GetFileName(sourcePath),
+                IsFolder = false,
+                Size = new FileInfo(sourcePath).Length,
                 BlobId = blobId
-            });
+            };
 
+            var parent = FindFolder(CurrentIndex.Root, targetParentPath) ?? CurrentIndex.Root;
+            parent.Children.Add(item);
             await SaveIndexAsync();
+        }
+
+        public async Task DecryptFileAsync(EncryptedItemModel file, string destinationDirectory)
+        {
+            if (!IsUnlocked) throw new Exception("Vault is locked");
+
+            string sourceBlob = Path.Combine(_vaultPath, file.BlobId + ".vcrypt");
+            string destPath = Path.Combine(destinationDirectory, file.Name);
+
+            using (Aes aes = Aes.Create())
+            {
+                aes.Key = _encryptionKey;
+                using (FileStream fsIn = new FileStream(sourceBlob, FileMode.Open, FileAccess.Read))
+                {
+                    byte[] iv = new byte[aes.BlockSize / 8];
+                    await fsIn.ReadAsync(iv, 0, iv.Length);
+                    aes.IV = iv;
+
+                    using (CryptoStream cs = new CryptoStream(fsIn, aes.CreateDecryptor(), CryptoStreamMode.Read))
+                    using (FileStream fsOut = new FileStream(destPath, FileMode.Create, FileAccess.Write))
+                    {
+                        await cs.CopyToAsync(fsOut);
+                    }
+                }
+            }
+        }
+
+        public async Task CreateFolderAsync(string folderName, string parentPath = "")
+        {
+            if (!IsUnlocked || CurrentIndex == null) return;
+
+            var parent = FindFolder(CurrentIndex.Root, parentPath) ?? CurrentIndex.Root;
+            parent.Children.Add(new EncryptedItemModel
+            {
+                Name = folderName,
+                IsFolder = true
+            });
+            await SaveIndexAsync();
+        }
+
+        public async Task DeleteItemAsync(EncryptedItemModel item)
+        {
+            if (!IsUnlocked || CurrentIndex == null) return;
+            
+            // recursive delete blob files
+            void DeleteBlobs(EncryptedItemModel node)
+            {
+                if (!node.IsFolder && !string.IsNullOrEmpty(node.BlobId))
+                {
+                    string p = Path.Combine(_vaultPath, node.BlobId + ".vcrypt");
+                    if (File.Exists(p)) File.Delete(p);
+                }
+                foreach (var child in node.Children) DeleteBlobs(child);
+            }
+            
+            DeleteBlobs(item);
+            
+            RemoveItemFromTree(CurrentIndex.Root, item);
+            await SaveIndexAsync();
+        }
+
+        private EncryptedItemModel? FindFolder(EncryptedItemModel current, string targetPath)
+        {
+            if (string.IsNullOrEmpty(targetPath)) return current;
+            var parts = targetPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            
+            var ptr = current;
+            foreach (var part in parts)
+            {
+                var next = ptr.Children.FirstOrDefault(c => c.IsFolder && c.Name == part);
+                if (next == null) return null;
+                ptr = next;
+            }
+            return ptr;
+        }
+
+        public EncryptedItemModel? GetItemByPath(string targetPath)
+        {
+            if (string.IsNullOrEmpty(targetPath)) return CurrentIndex?.Root;
+            
+            var parts = targetPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            var ptr = CurrentIndex?.Root;
+            
+            for (int i = 0; i < parts.Length; i++)
+            {
+                if (ptr == null) return null;
+                var next = ptr.Children.FirstOrDefault(c => c.Name == parts[i]);
+                if (next == null) return null;
+                ptr = next;
+            }
+            
+            return ptr;
+        }
+
+        private bool RemoveItemFromTree(EncryptedItemModel parent, EncryptedItemModel item)
+        {
+            if (parent.Children.Remove(item)) return true;
+            foreach (var child in parent.Children.Where(c => c.IsFolder))
+            {
+                if (RemoveItemFromTree(child, item)) return true;
+            }
+            return false;
         }
     }
 }

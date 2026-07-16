@@ -3,11 +3,16 @@ using CommunityToolkit.Mvvm.Input;
 using Vcrypt.Core.Interfaces;
 using Vcrypt.Core.Models;
 using Vcrypt.Core.Services;
+using Vcrypt.Core.WebDav;
 using Vcrypt.Infrastructure.Hardware;
 using System.Collections.ObjectModel;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Collections.Generic;
+using System.Linq;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Windows.Threading;
 
 namespace Vcrypt.UI.ViewModels
 {
@@ -16,6 +21,18 @@ namespace Vcrypt.UI.ViewModels
         private readonly IUsbMonitorService _usbMonitor;
         private readonly IPartitionManager _partitionManager;
         private IEncryptionProvider? _vault;
+        private readonly WebDavServerManager _webDavManager;
+        private readonly DriveMapper _driveMapper;
+        private const string MOUNT_DRIVE = "Z";
+        private DispatcherTimer _capacityTimer;
+        private string _mountPath = "";
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        static extern bool GetDiskFreeSpaceEx(string lpDirectoryName,
+            out ulong lpFreeBytesAvailable,
+            out ulong lpTotalNumberOfBytes,
+            out ulong lpTotalNumberOfFreeBytes);
 
         [ObservableProperty]
         private string _currentView = "Waiting";
@@ -34,7 +51,7 @@ namespace Vcrypt.UI.ViewModels
 
         // Setup Form Bindings
         [ObservableProperty]
-        private int _setupPublicMB = 100;
+        private int _setupPublicMB = 250;
         
         [ObservableProperty]
         private string _setupPassword = "";
@@ -52,31 +69,138 @@ namespace Vcrypt.UI.ViewModels
         [ObservableProperty]
         private string _unlockPassword = "";
 
-        public ObservableCollection<EncryptedFileModel> VaultFiles { get; } = new();
+        // File Explorer Bindings
+        [ObservableProperty]
+        private string _currentPath = "";
+
+        [ObservableProperty]
+        private string _setupLogs = "";
+
+        [ObservableProperty]
+        private bool _isVaultCapacityVisible = false;
+
+        [ObservableProperty]
+        private string _vaultCapacityString = "";
+
+        [ObservableProperty]
+        private string _vaultFreeString = "";
+
+        [ObservableProperty]
+        private double _vaultUsedPercentage = 0;
+
+        [ObservableProperty]
+        private double _imagesShare = 0;
+
+        [ObservableProperty]
+        private double _videosShare = 0;
+
+        [ObservableProperty]
+        private double _audioShare = 0;
+
+        [ObservableProperty]
+        private double _documentsShare = 0;
+
+        [ObservableProperty]
+        private double _appsShare = 0;
+
+        [ObservableProperty]
+        private double _otherShare = 0;
+
+        [ObservableProperty]
+        private double _freeShare = 1;
+
+        public ObservableCollection<EncryptedItemModel> VaultFiles { get; } = new();
 
         public MainWindowViewModel()
         {
             _usbMonitor = new WmiUsbMonitorService();
             _partitionManager = new PowerShellPartitionManager();
+            _webDavManager = new WebDavServerManager();
+            _driveMapper = new DriveMapper();
 
             _usbMonitor.DriveInserted += UsbMonitor_DriveInserted;
             _usbMonitor.DriveRemoved += UsbMonitor_DriveRemoved;
             _usbMonitor.StartMonitoring();
 
-            Application.Current.Exit += (s, e) =>
+            _capacityTimer = new DispatcherTimer();
+            _capacityTimer.Interval = System.TimeSpan.FromSeconds(2);
+            _capacityTimer.Tick += CapacityTimer_Tick;
+        }
+
+        private void CapacityTimer_Tick(object? sender, System.EventArgs e)
+        {
+            if (string.IsNullOrEmpty(_mountPath)) return;
+            
+            string pathWithSlash = _mountPath;
+            if (!pathWithSlash.EndsWith("\\")) pathWithSlash += "\\";
+
+            if (GetDiskFreeSpaceEx(pathWithSlash, out ulong freeAvail, out ulong totalBytes, out ulong totalFree))
             {
-                try
+                long total = (long)totalBytes;
+                long free = (long)totalFree;
+                long physicalUsed = total - free;
+                
+                VaultUsedPercentage = total > 0 ? (double)physicalUsed / total * 100 : 0;
+                VaultCapacityString = FormatBytes(total);
+                VaultFreeString = $"{FormatBytes(free)} ({(free / 1024 / 1024):N0} MB)";
+
+                // Calculate logical file sizes
+                long images = 0, videos = 0, audio = 0, docs = 0, apps = 0, other = 0;
+                if (_vault?.CurrentIndex?.Root != null)
                 {
-                    var process = new System.Diagnostics.Process();
-                    process.StartInfo.FileName = "powershell.exe";
-                    process.StartInfo.Arguments = "-WindowStyle Hidden -Command \"(Get-Volume -FileSystemLabel 'SecureVault' -ErrorAction SilentlyContinue | Get-Partition | Remove-PartitionAccessPath -AccessPath ((Get-Volume -FileSystemLabel 'SecureVault').DriveLetter + ':\\'))\"";
-                    process.StartInfo.UseShellExecute = false;
-                    process.StartInfo.CreateNoWindow = true;
-                    process.Start();
-                    process.WaitForExit(3000);
+                    CalculateCategorySizes(_vault.CurrentIndex.Root, ref images, ref videos, ref audio, ref docs, ref apps, ref other);
                 }
-                catch { }
-            };
+
+                // The sum of logical files will be slightly less than physical used (due to padding/filesystem overhead).
+                // We add the unaccounted physical overhead to "Other" so the bar fills up exactly to the physical used space.
+                long logicalTotal = images + videos + audio + docs + apps + other;
+                long overhead = System.Math.Max(0, physicalUsed - logicalTotal);
+                other += overhead;
+
+                ImagesShare = total > 0 ? (double)images / total : 0;
+                VideosShare = total > 0 ? (double)videos / total : 0;
+                AudioShare = total > 0 ? (double)audio / total : 0;
+                DocumentsShare = total > 0 ? (double)docs / total : 0;
+                AppsShare = total > 0 ? (double)apps / total : 0;
+                OtherShare = total > 0 ? (double)other / total : 0;
+                FreeShare = total > 0 ? (double)free / total : 1;
+            }
+        }
+
+        private void CalculateCategorySizes(EncryptedItemModel current, ref long images, ref long videos, ref long audio, ref long docs, ref long apps, ref long other)
+        {
+            if (current == null) return;
+
+            if (!current.IsFolder)
+            {
+                string ext = System.IO.Path.GetExtension(current.Name).ToLowerInvariant();
+                switch (ext)
+                {
+                    case ".jpg": case ".jpeg": case ".png": case ".gif": case ".bmp": case ".webp": case ".heic": case ".svg":
+                        images += current.Size;
+                        break;
+                    case ".mp4": case ".mkv": case ".avi": case ".mov": case ".wmv": case ".flv": case ".webm":
+                        videos += current.Size;
+                        break;
+                    case ".mp3": case ".wav": case ".flac": case ".aac": case ".ogg": case ".m4a":
+                        audio += current.Size;
+                        break;
+                    case ".pdf": case ".doc": case ".docx": case ".txt": case ".xlsx": case ".xls": case ".pptx": case ".ppt": case ".md": case ".csv":
+                        docs += current.Size;
+                        break;
+                    case ".exe": case ".msi": case ".dll": case ".apk": case ".appx": case ".iso":
+                        apps += current.Size;
+                        break;
+                    default:
+                        other += current.Size;
+                        break;
+                }
+            }
+
+            foreach (var child in current.Children)
+            {
+                CalculateCategorySizes(child, ref images, ref videos, ref audio, ref docs, ref apps, ref other);
+            }
         }
 
         private void UsbMonitor_DriveInserted(object? sender, UsbDriveEventArgs e)
@@ -107,8 +231,14 @@ namespace Vcrypt.UI.ViewModels
 
                 if (e.DriveLetter == DetectedDriveLetter)
                 {
+                    _capacityTimer.Stop();
+                    _mountPath = "";
+                    _driveMapper.UnmapDrive(MOUNT_DRIVE);
+                    _webDavManager.Stop();
                     DetectedDriveLetter = "";
                     VaultFiles.Clear();
+                    _vault = null;
+                    CurrentPath = "";
                     StatusMessage = "Waiting for Drive...";
                     CurrentView = "Waiting";
                 }
@@ -140,16 +270,21 @@ namespace Vcrypt.UI.ViewModels
             
             if (SetupPublicMB < 250)
             {
-                MessageBox.Show("The public area must be at least 250 MB so the Vcrypt application has sufficient space to reside there.", "Constraint Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show("The public area must be at least 250 MB.", "Constraint Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
                 SetupPublicMB = 250;
                 return;
             }
             
             IsProcessing = true;
             ProgressValue = 0;
+            SetupLogs = "Initializing Setup...\n";
             
-            var progressText = new Progress<string>(s => StatusMessage = s);
-            var progressVal = new Progress<int>(v => ProgressValue = v);
+            var progressText = new System.Progress<string>(s => 
+            {
+                StatusMessage = s;
+                SetupLogs += s + "\n";
+            });
+            var progressVal = new System.Progress<int>(v => ProgressValue = v);
             
             try
             {
@@ -172,15 +307,18 @@ namespace Vcrypt.UI.ViewModels
             {
                 MessageBox.Show($"Failed to format drive: {ex.Message}");
                 StatusMessage = "Initialization Failed.";
+            }
+            finally
+            {
+                IsProcessing = false;
                 ProgressValue = 0;
             }
-            IsProcessing = false;
         }
 
         [RelayCommand]
         private void ResetDrive()
         {
-            var result = MessageBox.Show("Are you sure you want to completely erase and re-format this drive? All existing data will be permanently lost.", "Reset Drive", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            var result = MessageBox.Show("Are you sure you want to completely erase and re-format this drive?", "Reset Drive", MessageBoxButton.YesNo, MessageBoxImage.Warning);
             if (result == MessageBoxResult.Yes)
             {
                 CurrentView = "Setup";
@@ -206,22 +344,50 @@ namespace Vcrypt.UI.ViewModels
 
                     if (storedHash == attemptHash)
                     {
-                        var drivePath = await _partitionManager.MountVaultAsync();
-                        if (drivePath != null)
+                        var mountPath = await _partitionManager.MountVaultAsync(DetectedDriveLetter);
+                        if (!string.IsNullOrEmpty(mountPath))
                         {
+                            _vault = new AesEncryptionProvider();
+                            _vault.Initialize(mountPath);
+                            
+                            if (!await _vault.UnlockAsync(UnlockPassword))
+                            {
+                                await _vault.InitializeNewVaultAsync(UnlockPassword);
+                            }
+
+                            // Patch registry for big files
+                            WebDavRegistryPatcher.EnsureMaxFileSizeLimit();
+
+                            // Start WebDAV Server and Map Drive
+                            _webDavManager.Start((AesEncryptionProvider)_vault);
+                            _driveMapper.MapDrive(MOUNT_DRIVE, _webDavManager.BaseUrl);
+
+                            var capacity = await _partitionManager.GetVaultCapacityAsync(DetectedDriveLetter);
+                            if (capacity != null)
+                            {
+                                long used = capacity.TotalBytes - capacity.FreeBytes;
+                                VaultUsedPercentage = capacity.TotalBytes > 0 ? (double)used / capacity.TotalBytes * 100 : 0;
+                                VaultCapacityString = FormatBytes(capacity.TotalBytes);
+                                VaultFreeString = FormatBytes(capacity.FreeBytes);
+                                IsVaultCapacityVisible = true;
+                                
+                                // Start real-time polling
+                                _mountPath = mountPath;
+                                _capacityTimer.Start();
+                            }
+                            else
+                            {
+                                IsVaultCapacityVisible = false;
+                            }
+
+                            CurrentPath = "";
+                            StatusMessage = "Vault mounted as Z: drive";
                             CurrentView = "Vault";
                             UnlockPassword = "";
-                            
-                            // Open Windows Explorer to the new drive!
-                            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo()
-                            {
-                                FileName = drivePath,
-                                UseShellExecute = true
-                            });
                         }
                         else
                         {
-                            MessageBox.Show("Failed to mount the secure partition. It may be missing.");
+                            MessageBox.Show("Failed to mount the secure partition.");
                         }
                     }
                     else
@@ -231,7 +397,9 @@ namespace Vcrypt.UI.ViewModels
                 }
                 else
                 {
-                    MessageBox.Show("Signature file missing. Is this a Vcrypt drive?");
+                    string files = "";
+                    try { files = string.Join(", ", System.IO.Directory.GetFiles(DetectedDriveLetter + "\\")); } catch { files = "Error reading dir"; }
+                    MessageBox.Show($"Signature file missing.\nPath checked: {sigPath}\nFiles found: {files}\nIs this a Vcrypt drive?", "Missing Signature");
                 }
             }
             catch (System.Exception ex)
@@ -248,7 +416,15 @@ namespace Vcrypt.UI.ViewModels
             IsProcessing = true;
             StatusMessage = "Locking Vault...";
             
-            await _partitionManager.UnmountVaultAsync();
+            _capacityTimer.Stop();
+            _mountPath = "";
+            _driveMapper.UnmapDrive(MOUNT_DRIVE);
+            _webDavManager.Stop();
+            _vault?.Lock();
+            VaultFiles.Clear();
+            _vault = null;
+
+            await _partitionManager.UnmountVaultAsync(DetectedDriveLetter);
             
             CurrentView = "Unlock";
             StatusMessage = $"Locked Vault Detected ({DetectedDriveLetter})";
@@ -262,9 +438,181 @@ namespace Vcrypt.UI.ViewModels
             {
                 System.Diagnostics.Process.Start("explorer", "https://vijay-portfolio-three.vercel.app/");
             }
+            catch { }
+        }
+
+        private string FormatBytes(long bytes)
+        {
+            string[] suf = { "B", "KB", "MB", "GB", "TB", "PB", "EB" }; 
+            if (bytes == 0) return "0 B";
+            long bytesCopy = System.Math.Abs(bytes);
+            int place = System.Convert.ToInt32(System.Math.Floor(System.Math.Log(bytesCopy, 1024)));
+            double num = System.Math.Round(bytesCopy / System.Math.Pow(1024, place), 1);
+            return (System.Math.Sign(bytes) * num).ToString() + " " + suf[place];
+        }
+
+        // --- File Explorer Commands ---
+
+        [RelayCommand]
+        private void NavigateBack()
+        {
+            if (string.IsNullOrEmpty(CurrentPath)) return;
+            var parts = CurrentPath.Split('/', System.StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length <= 1) CurrentPath = "";
+            else CurrentPath = string.Join("/", parts.Take(parts.Length - 1));
+        }
+
+        [RelayCommand]
+        private void OpenFolder(EncryptedItemModel folder)
+        {
+            if (!folder.IsFolder) return;
+            if (string.IsNullOrEmpty(CurrentPath)) CurrentPath = folder.Name;
+            else CurrentPath += "/" + folder.Name;
+        }
+
+        [RelayCommand]
+        private void OpenExplorer()
+        {
+            if (_vault != null)
+            {
+                _driveMapper.OpenInExplorer(MOUNT_DRIVE);
+            }
+        }
+
+        private void RefreshVaultView()
+        {
+            VaultFiles.Clear();
+            if (_vault?.CurrentIndex == null) return;
+
+            var current = FindFolder(_vault.CurrentIndex.Root, CurrentPath);
+            if (current != null)
+            {
+                foreach (var child in current.Children.OrderByDescending(c => c.IsFolder).ThenBy(c => c.Name))
+                {
+                    VaultFiles.Add(child);
+                }
+            }
+        }
+
+        private EncryptedItemModel? FindFolder(EncryptedItemModel current, string targetPath)
+        {
+            if (string.IsNullOrEmpty(targetPath)) return current;
+            var parts = targetPath.Split('/', System.StringSplitOptions.RemoveEmptyEntries);
+            var ptr = current;
+            foreach (var part in parts)
+            {
+                var next = ptr.Children.FirstOrDefault(c => c.IsFolder && c.Name == part);
+                if (next == null) return null;
+                ptr = next;
+            }
+            return ptr;
+        }
+
+        public async Task ProcessDroppedFiles(string[] files)
+        {
+            if (_vault == null) return;
+            IsProcessing = true;
+            StatusMessage = "Encrypting files...";
+
+            try
+            {
+                foreach (var file in files)
+                {
+                    if (File.Exists(file))
+                    {
+                        await _vault.EncryptFileAsync(file, CurrentPath);
+                    }
+                }
+                RefreshVaultView();
+            }
             catch (System.Exception ex)
             {
-                MessageBox.Show($"Could not open browser: {ex.Message}");
+                MessageBox.Show("Error adding files: " + ex.Message);
+            }
+            IsProcessing = false;
+        }
+
+        [RelayCommand]
+        private async Task CreateFolder()
+        {
+            if (_vault == null) return;
+            
+            // Simple prompt placeholder
+            string folderName = "New Folder"; // We will add a dialog logic here or let user rename
+            await _vault.CreateFolderAsync(folderName, CurrentPath);
+            RefreshVaultView();
+        }
+
+        [RelayCommand]
+        private async Task AddFiles()
+        {
+            if (_vault == null) return;
+
+            var dialog = new Microsoft.Win32.OpenFileDialog
+            {
+                Multiselect = true,
+                Title = "Select files to encrypt"
+            };
+
+            if (dialog.ShowDialog() == true)
+            {
+                await ProcessDroppedFiles(dialog.FileNames);
+            }
+        }
+
+        [RelayCommand]
+        private async Task ExtractItem(EncryptedItemModel item)
+        {
+            if (_vault == null || item.IsFolder) return;
+            
+            var dialog = new Microsoft.Win32.SaveFileDialog
+            {
+                Title = "Extract File",
+                FileName = item.Name,
+                Filter = "All Files (*.*)|*.*"
+            };
+
+            if (dialog.ShowDialog() == true)
+            {
+                IsProcessing = true;
+                StatusMessage = "Decrypting...";
+                
+                try
+                {
+                    // Pass the exact selected file path, not just the directory
+                    string selectedDirectory = System.IO.Path.GetDirectoryName(dialog.FileName) ?? "";
+                    string selectedName = System.IO.Path.GetFileName(dialog.FileName);
+                    
+                    // Temporarily change item name to match what user chose in dialog
+                    string originalName = item.Name;
+                    item.Name = selectedName;
+                    
+                    await _vault.DecryptFileAsync(item, selectedDirectory);
+                    
+                    item.Name = originalName; // Restore
+                    
+                    MessageBox.Show($"File successfully extracted to:\n{dialog.FileName}", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                catch (System.Exception ex)
+                {
+                    MessageBox.Show($"Error extracting file: {ex.Message}", "Extraction Failed", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+                finally
+                {
+                    IsProcessing = false;
+                }
+            }
+        }
+
+        [RelayCommand]
+        private async Task DeleteItem(EncryptedItemModel item)
+        {
+            if (_vault == null) return;
+            var result = MessageBox.Show($"Delete {item.Name}?", "Confirm Delete", MessageBoxButton.YesNo);
+            if (result == MessageBoxResult.Yes)
+            {
+                await _vault.DeleteItemAsync(item);
+                RefreshVaultView();
             }
         }
     }

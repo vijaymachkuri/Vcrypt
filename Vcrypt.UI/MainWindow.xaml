@@ -16,6 +16,21 @@
     <Window.Resources>
         <converters:StringToVisConverter x:Key="StringToVisConverter" />
         <converters:BoolToVisConverter x:Key="BoolToVisConverter" />
+        <converters:DoubleToStarGridLengthConverter x:Key="DoubleToStarGridLengthConverter" />
+        
+        <DataTemplate x:Key="FolderTemplate">
+            <StackPanel Orientation="Horizontal" Margin="5">
+                <TextBlock Text="📁" FontSize="20" Margin="0,0,10,0"/>
+                <TextBlock Text="{Binding Name}" VerticalAlignment="Center" FontWeight="SemiBold" FontSize="14"/>
+            </StackPanel>
+        </DataTemplate>
+        <DataTemplate x:Key="FileTemplate">
+            <StackPanel Orientation="Horizontal" Margin="5">
+                <TextBlock Text="📄" FontSize="20" Margin="0,0,10,0"/>
+                <TextBlock Text="{Binding Name}" VerticalAlignment="Center" FontSize="14"/>
+                <TextBlock Text="{Binding Size, StringFormat={}{0} bytes}" Foreground="Gray" Margin="15,0,0,0" VerticalAlignment="Center" FontSize="12"/>
+            </StackPanel>
+        </DataTemplate>
     </Window.Resources>
 
     <Grid>
@@ -92,25 +107,93 @@
                 </StackPanel>
             </Grid>
 
-            <!-- VAULT VIEW -->
+            <!-- VAULT / FILE EXPLORER VIEW -->
             <Grid Visibility="{Binding CurrentView, Converter={StaticResource StringToVisConverter}, ConverterParameter='Vault'}">
-                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
-                    <TextBlock Text="🔓 Vault Unlocked" FontSize="36" FontWeight="SemiBold" Foreground="#28C840" HorizontalAlignment="Center" Margin="0,0,0,10"/>
-                    <TextBlock Text="The secure partition is now mounted as a regular drive in Windows Explorer." Foreground="{DynamicResource TextFillColorSecondaryBrush}" TextAlignment="Center" Margin="0,0,0,20"/>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
+                    <ui:Button Icon="{ui:SymbolIcon LockClosed24}" Content="Lock Vault" Command="{Binding LockVaultCommand}" Margin="0,0,10,0"/>
+                </StackPanel>
+
+                <StackPanel Grid.Row="1" VerticalAlignment="Center" HorizontalAlignment="Center">
+                    <ui:SymbolIcon Symbol="Folder24" FontSize="64" Foreground="{DynamicResource SystemAccentColorPrimaryBrush}" Margin="0,0,0,20"/>
+                    <TextBlock Text="Vault Mounted Successfully!" FontSize="24" FontWeight="Bold" TextAlignment="Center" Margin="0,0,0,10"/>
+                    <TextBlock Text="Your secure files are now available as the Z:\ Drive in Windows Explorer." Foreground="{DynamicResource TextFillColorSecondaryBrush}" TextAlignment="Center" Margin="0,0,0,20" TextWrapping="Wrap"/>
                     
-                    <ui:Button Content="Lock &amp; Hide Vault" Appearance="Danger" Command="{Binding LockVaultCommand}" HorizontalAlignment="Center" Padding="40,10" FontSize="16"/>
+                    <StackPanel Visibility="{Binding IsVaultCapacityVisible, Converter={StaticResource BoolToVisConverter}}" Margin="0,0,0,30" Width="350">
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="SecureVault Storage" FontWeight="SemiBold" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Column="1">
+                                <Run Text="{Binding VaultCapacityString}" FontWeight="SemiBold"/>
+                                <Run Text=" total" Foreground="{DynamicResource TextFillColorTertiaryBrush}"/>
+                            </TextBlock>
+                        </Grid>
+                        
+                        <Border CornerRadius="5" ClipToBounds="True" Height="12" Margin="0,0,0,12" Background="{DynamicResource ControlFillColorDefaultBrush}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="{Binding ImagesShare, Converter={StaticResource DoubleToStarGridLengthConverter}}" />
+                                    <ColumnDefinition Width="{Binding VideosShare, Converter={StaticResource DoubleToStarGridLengthConverter}}" />
+                                    <ColumnDefinition Width="{Binding AudioShare, Converter={StaticResource DoubleToStarGridLengthConverter}}" />
+                                    <ColumnDefinition Width="{Binding DocumentsShare, Converter={StaticResource DoubleToStarGridLengthConverter}}" />
+                                    <ColumnDefinition Width="{Binding AppsShare, Converter={StaticResource DoubleToStarGridLengthConverter}}" />
+                                    <ColumnDefinition Width="{Binding OtherShare, Converter={StaticResource DoubleToStarGridLengthConverter}}" />
+                                    <ColumnDefinition Width="{Binding FreeShare, Converter={StaticResource DoubleToStarGridLengthConverter}}" />
+                                </Grid.ColumnDefinitions>
+                                <Rectangle Grid.Column="0" Fill="#FFCC00" />
+                                <Rectangle Grid.Column="1" Fill="#AF52DE" />
+                                <Rectangle Grid.Column="2" Fill="#FF2D55" />
+                                <Rectangle Grid.Column="3" Fill="#007AFF" />
+                                <Rectangle Grid.Column="4" Fill="#FF3B30" />
+                                <Rectangle Grid.Column="5" Fill="#8E8E93" />
+                                <Rectangle Grid.Column="6" Fill="Transparent" />
+                            </Grid>
+                        </Border>
+
+                        <WrapPanel HorizontalAlignment="Center" Margin="0,0,0,10">
+                            <StackPanel Orientation="Horizontal" Margin="0,0,15,5">
+                                <Ellipse Width="8" Height="8" Fill="#FFCC00" Margin="0,0,5,0" VerticalAlignment="Center"/>
+                                <TextBlock Text="Images" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,15,5">
+                                <Ellipse Width="8" Height="8" Fill="#AF52DE" Margin="0,0,5,0" VerticalAlignment="Center"/>
+                                <TextBlock Text="Videos" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,15,5">
+                                <Ellipse Width="8" Height="8" Fill="#FF2D55" Margin="0,0,5,0" VerticalAlignment="Center"/>
+                                <TextBlock Text="Audio" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,15,5">
+                                <Ellipse Width="8" Height="8" Fill="#007AFF" Margin="0,0,5,0" VerticalAlignment="Center"/>
+                                <TextBlock Text="Docs" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,15,5">
+                                <Ellipse Width="8" Height="8" Fill="#FF3B30" Margin="0,0,5,0" VerticalAlignment="Center"/>
+                                <TextBlock Text="Apps" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                                <Ellipse Width="8" Height="8" Fill="#8E8E93" Margin="0,0,5,0" VerticalAlignment="Center"/>
+                                <TextBlock Text="Other" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                            </StackPanel>
+                        </WrapPanel>
+
+                        <TextBlock HorizontalAlignment="Right" FontSize="13" Foreground="{DynamicResource TextFillColorSecondaryBrush}">
+                            <Run Text="{Binding VaultFreeString}" FontWeight="SemiBold" Foreground="LightGreen"/>
+                            <Run Text=" free" />
+                        </TextBlock>
+                    </StackPanel>
+                    
+                    <ui:Button Appearance="Primary" Content="Open in Windows Explorer" Command="{Binding OpenExplorerCommand}" HorizontalAlignment="Center" Padding="20,10" FontSize="16"/>
                 </StackPanel>
             </Grid>
 
-            <!-- PROCESSING OVERLAY -->
-            <Grid Visibility="{Binding IsProcessing, Converter={StaticResource BoolToVisConverter}}">
-                <Border Background="{DynamicResource SolidBackgroundFillColorBaseBrush}" Opacity="0.95" CornerRadius="8" />
-                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Width="400">
-                    <TextBlock Text="{Binding StatusMessage}" FontSize="18" FontWeight="SemiBold" TextAlignment="Center" Margin="0,0,0,15" />
-                    <ProgressBar Value="{Binding ProgressValue}" Minimum="0" Maximum="100" Height="8" Foreground="#28C840" Margin="0,0,0,10" />
-                    <TextBlock Text="{Binding ProgressValue, StringFormat={}{0}%}" TextAlignment="Center" FontSize="14" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                </StackPanel>
-            </Grid>
         </Grid>
         
         <ui:Button Grid.Row="1" Command="{Binding SupportCommand}" Appearance="Transparent" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="15" ToolTip="Support my work!">
@@ -119,5 +202,49 @@
                 <TextBlock Text="Support Me" FontWeight="SemiBold" Foreground="#ff6b6b" />
             </StackPanel>
         </ui:Button>
+
+        <!-- FULL SCREEN PROCESSING OVERLAY -->
+        <Grid Grid.Row="1" Visibility="{Binding IsProcessing, Converter={StaticResource BoolToVisConverter}}" Background="#D9000000">
+            <Border Background="{DynamicResource SolidBackgroundFillColorBaseBrush}" CornerRadius="12" VerticalAlignment="Center" HorizontalAlignment="Center" Padding="40" MinWidth="350">
+                <StackPanel>
+                    <TextBlock Text="{Binding StatusMessage}" FontSize="20" FontWeight="SemiBold" TextAlignment="Center" Margin="0,0,0,20" />
+                    <ProgressBar Value="{Binding ProgressValue}" Minimum="0" Maximum="100" Height="8" Foreground="#28C840" Margin="0,0,0,15">
+                        <ProgressBar.Style>
+                            <Style TargetType="ProgressBar" BasedOn="{StaticResource {x:Type ProgressBar}}">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding ProgressValue}" Value="0">
+                                        <Setter Property="IsIndeterminate" Value="True"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ProgressBar.Style>
+                    </ProgressBar>
+                    <TextBlock Text="{Binding ProgressValue, StringFormat={}{0}%}" TextAlignment="Center" FontSize="14" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,0,0,15">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Visible"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding ProgressValue}" Value="0">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                    <TextBox Text="{Binding SetupLogs}" Height="150" IsReadOnly="True" VerticalScrollBarVisibility="Auto" TextWrapping="Wrap" Background="Black" Foreground="LightGreen" FontFamily="Consolas">
+                        <TextBox.Style>
+                            <Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+                                <Setter Property="Visibility" Value="Visible"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding ProgressValue}" Value="0">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBox.Style>
+                    </TextBox>
+                </StackPanel>
+            </Border>
+        </Grid>
     </Grid>
 </ui:FluentWindow>

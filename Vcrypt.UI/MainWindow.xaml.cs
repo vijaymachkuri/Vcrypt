@@ -1,22 +1,46 @@
-using Vcrypt.UI.ViewModels;
 using System.Windows;
-using Wpf.Ui.Controls;
-using Wpf.Ui.Appearance;
+using Vcrypt.UI.ViewModels;
+using System.Windows.Input;
+using Vcrypt.Core.Models;
 
 namespace Vcrypt.UI
 {
-    public partial class MainWindow : FluentWindow
+    public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
-        private MainWindowViewModel _viewModel;
-
         public MainWindow()
         {
             InitializeComponent();
-            _viewModel = new MainWindowViewModel();
-            DataContext = _viewModel;
-            
-            // Set the modern system theme
-            SystemThemeWatcher.Watch(this);
+            DataContext = new MainWindowViewModel();
+        }
+
+        private async void Vault_Drop(object sender, DragEventArgs e)
+        {
+            if (e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                string[] files = (string[])e.Data.GetData(DataFormats.FileDrop);
+                if (DataContext is MainWindowViewModel vm)
+                {
+                    await vm.ProcessDroppedFiles(files);
+                }
+            }
+        }
+
+        private void ListViewItem_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        {
+            if (sender is System.Windows.Controls.ListViewItem item && item.DataContext is EncryptedItemModel model)
+            {
+                if (DataContext is MainWindowViewModel vm)
+                {
+                    if (model.IsFolder)
+                    {
+                        vm.OpenFolderCommand.Execute(model);
+                    }
+                    else
+                    {
+                        vm.ExtractItemCommand.Execute(model);
+                    }
+                }
+            }
         }
     }
 }

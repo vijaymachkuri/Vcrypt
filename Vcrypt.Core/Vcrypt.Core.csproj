@@ -6,4 +6,9 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <PackageReference Include="NWebDav.Server" Version="0.1.36" />
+    <PackageReference Include="NWebDav.Server.HttpListener" Version="0.1.36" />
+  </ItemGroup>
+
 </Project>
