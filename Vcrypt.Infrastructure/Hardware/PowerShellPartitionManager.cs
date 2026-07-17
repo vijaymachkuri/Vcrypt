@@ -61,14 +61,30 @@ mountvol /N | Out-Null
 Stop-Service -Name ShellHWDetection -Force -ErrorAction SilentlyContinue
 
 try {{
+    # Unmount existing volumes
     Get-Partition -DiskNumber $disk -ErrorAction SilentlyContinue | Where-Object DriveLetter | ForEach-Object {{ Remove-PartitionAccessPath -InputObject $_ -AccessPath ($_.DriveLetter + ':\') }}
-    Clear-Disk -Number $disk -RemoveData -Confirm:$false
-    Initialize-Disk -Number $disk -PartitionStyle MBR -ErrorAction SilentlyContinue
-    New-Partition -DiskNumber $disk -Size {publicMB}MB -AssignDriveLetter | Format-Volume -FileSystem {fileSystem} -NewFileSystemLabel 'Public' -Force | Out-Null
     
-    New-Partition -DiskNumber $disk -UseMaximumSize -AssignDriveLetter | Format-Volume -FileSystem NTFS -NewFileSystemLabel 'SecureVault' -Force | Out-Null
-    Start-Sleep -Seconds 2
-    $dl = (Get-Partition -DiskNumber $disk -PartitionNumber 2).DriveLetter
+    # Use diskpart for reliable wiping of Removable USB drives (Clear-Disk fails on them)
+    $dpScript = @""
+select disk $disk
+clean
+convert mbr
+create partition primary size={publicMB}
+assign
+create partition primary
+assign
+""@
+    $dpScript | diskpart | Out-Null
+    
+    Start-Sleep -Seconds 3
+    
+    $part1 = Get-Partition -DiskNumber $disk -PartitionNumber 1
+    Format-Volume -Partition $part1 -FileSystem {fileSystem} -NewFileSystemLabel ""Public"" -Confirm:$false -Force | Out-Null
+    
+    $part2 = Get-Partition -DiskNumber $disk -PartitionNumber 2
+    Format-Volume -Partition $part2 -FileSystem ntfs -NewFileSystemLabel ""SecureVault"" -Confirm:$false -Force | Out-Null
+    
+    $dl = $part2.DriveLetter
     if ($dl) {{ Remove-PartitionAccessPath -DiskNumber $disk -PartitionNumber 2 -AccessPath ($dl + ':\') }}
     Get-Partition -DiskNumber $disk -PartitionNumber 2 | Set-Partition -MbrType 23 | Out-Null
     Start-Sleep -Seconds 2
@@ -85,7 +101,7 @@ Set-Content -Path $sigPath -Value '{passwordHash}' -Force
 Write-Output $newLetter
 ";
             progressText?.Report($"Formatting Disk (this may take a few moments)...");
-            progressValue?.Report(50);
+            progressValue?.Report(0);
             
             var newLetterFull = await RunPowerShellAsync(formatScript);
             if (string.IsNullOrWhiteSpace(newLetterFull)) throw new Exception("Could not find the drive letter after formatting.");
@@ -120,23 +136,59 @@ Write-Output $newLetter
             try
             {
                 var script = $@"
-$p = Get-Partition -DriveLetter '{publicDriveLetter.TrimEnd(':')}' -ErrorAction SilentlyContinue
+$ErrorActionPreference = 'Stop'
+$p = Get-Partition -DriveLetter '{publicDriveLetter.TrimEnd(':')}'
 if (-not $p) {{ throw 'Disk not found.' }}
 $diskNumber = $p.DiskNumber
 
 $partition = Get-Partition -DiskNumber $diskNumber | Where-Object PartitionNumber -eq 2
-if (-not $partition) {{ Write-Output ''; exit }}
+if (-not $partition) {{ throw 'Partition 2 not found.' }}
 
 # Unhide the partition (Change type to 0x07 NTFS)
 Set-Partition -InputObject $partition -MbrType 7 | Out-Null
-Start-Sleep -Seconds 2
 
 $mountPath = 'C:\ProgramData\Vcrypt\Mounts\' + $diskNumber
-if (-not (Test-Path $mountPath)) {{
+if (Test-Path $mountPath) {{
+    $test = Get-Item $mountPath -Force
+    if (-not ($test.Attributes -match 'ReparsePoint')) {{
+        # If it has files, move them to backup so the directory is empty for the mount point
+        $items = Get-ChildItem -Path $mountPath -Force
+        if ($items.Count -gt 0) {{
+            $backupPath = 'C:\ProgramData\Vcrypt\Mounts\Backup_' + $diskNumber
+            if (-not (Test-Path $backupPath)) {{ New-Item -ItemType Directory -Force -Path $backupPath | Out-Null }}
+            Move-Item -Path ""$mountPath\*"" -Destination $backupPath -Force -ErrorAction SilentlyContinue
+        }}
+    }}
+}} else {{
     New-Item -ItemType Directory -Force -Path $mountPath | Out-Null
 }}
 
-Add-PartitionAccessPath -DiskNumber $diskNumber -PartitionNumber 2 -AccessPath $mountPath
+# Wait for Windows to recognize the file system
+$vol = $null
+for ($i=0; $i -lt 15; $i++) {{
+    $vol = Get-Partition -DiskNumber $diskNumber -PartitionNumber 2 | Get-Volume -ErrorAction SilentlyContinue
+    if ($vol) {{ break }}
+    Start-Sleep -Milliseconds 1000
+}}
+
+if (-not $vol) {{ throw 'Volume did not become ready in time.' }}
+
+$isMounted = $false
+if (Test-Path $mountPath) {{
+    $check = Get-Item $mountPath -Force
+    if ($check.Attributes -match 'ReparsePoint') {{ $isMounted = $true }}
+}}
+
+if (-not $isMounted) {{
+    Add-PartitionAccessPath -DiskNumber $diskNumber -PartitionNumber 2 -AccessPath ($mountPath + '\')
+}}
+
+# Verify
+$test = Get-Item $mountPath -Force
+if (-not ($test.Attributes -match 'ReparsePoint')) {{
+    throw 'Mount point was not created successfully.'
+}}
+
 Write-Output $mountPath
 ";
                 var drivePath = await RunPowerShellAsync(script);
@@ -156,6 +208,7 @@ Write-Output $mountPath
             try
             {
                 var script = $@"
+$ErrorActionPreference = 'Stop'
 $p = Get-Partition -DriveLetter '{publicDriveLetter.TrimEnd(':')}' -ErrorAction SilentlyContinue
 if (-not $p) {{ throw 'Disk not found.' }}
 $diskNumber = $p.DiskNumber
@@ -164,7 +217,7 @@ $partition = Get-Partition -DiskNumber $diskNumber | Where-Object PartitionNumbe
 if ($partition) {{
     $mountPath = 'C:\ProgramData\Vcrypt\Mounts\' + $diskNumber
     if (Test-Path $mountPath) {{
-        Remove-PartitionAccessPath -DiskNumber $diskNumber -PartitionNumber 2 -AccessPath $mountPath -ErrorAction SilentlyContinue
+        Remove-PartitionAccessPath -DiskNumber $diskNumber -PartitionNumber 2 -AccessPath ($mountPath + '\') -ErrorAction SilentlyContinue
     }}
     Set-Partition -InputObject $partition -MbrType 23 | Out-Null
 }}
@@ -220,7 +273,7 @@ if ($vol) {{
             var outputFile = Path.GetTempFileName();
             var errorFile = Path.GetTempFileName();
             
-            var commandWithNoProgress = $"$ProgressPreference = 'SilentlyContinue'; {command}";
+            var commandWithNoProgress = $"$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; {command}";
             // Wrapper script to run the command and redirect output to files
             var wrapperScript = $@"
 try {{
@@ -240,8 +293,8 @@ try {{
                 {
                     FileName = "powershell.exe",
                     Arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encoded}",
-                    UseShellExecute = false,
-                    Verb = "",
+                    UseShellExecute = requireAdmin,
+                    Verb = requireAdmin ? "runas" : "",
                     CreateNoWindow = true,
                     WindowStyle = ProcessWindowStyle.Hidden
                 }

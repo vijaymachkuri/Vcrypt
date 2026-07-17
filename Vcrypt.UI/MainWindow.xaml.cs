@@ -2,14 +2,29 @@ using System.Windows;
 using Vcrypt.UI.ViewModels;
 using System.Windows.Input;
 using Vcrypt.Core.Models;
+using System.Runtime.InteropServices;
 
 namespace Vcrypt.UI
 {
     public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool ChangeWindowMessageFilter(uint msg, uint flags);
+
+        private const uint WM_DROPFILES = 0x0233;
+        private const uint WM_COPYDATA = 0x004A;
+        private const uint WM_COPYGLOBALDATA = 0x0049;
+        private const uint MSGFLT_ADD = 1;
+
         public MainWindow()
         {
             InitializeComponent();
+            
+            // Allow drag and drop from Explorer when running as Administrator (bypass UIPI)
+            ChangeWindowMessageFilter(WM_DROPFILES, MSGFLT_ADD);
+            ChangeWindowMessageFilter(WM_COPYDATA, MSGFLT_ADD);
+            ChangeWindowMessageFilter(WM_COPYGLOBALDATA, MSGFLT_ADD);
+
             DataContext = new MainWindowViewModel();
         }
 

@@ -40,7 +40,7 @@ namespace Vcrypt.Core.Interfaces
         Task InitializeNewVaultAsync(string password);
         Task<bool> UnlockAsync(string password);
         void Lock();
-        Task EncryptFileAsync(string sourcePath, string targetParentPath = "");
+        Task EncryptFileAsync(string sourcePath, string targetParentPath = "", IProgress<CopyProgressReport>? progress = null, CopyProgressReport? state = null);
         Task DecryptFileAsync(EncryptedItemModel file, string destinationDirectory);
         Task DeleteItemAsync(EncryptedItemModel item);
         Task CreateFolderAsync(string folderName, string parentPath = "");

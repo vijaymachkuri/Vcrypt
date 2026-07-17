@@ -36,23 +36,13 @@ namespace Vcrypt.Core.WebDav
         public IPropertyManager PropertyManager { get; }
         public ILockingManager LockingManager => new InMemoryLockingManager();
 
-        public async Task<Stream> GetReadableStreamAsync(IHttpContext httpContext)
+        public Task<Stream> GetReadableStreamAsync(IHttpContext httpContext)
         {
             if (!_vault.IsUnlocked) throw new Exception("Vault is locked");
 
             string sourceBlob = Path.Combine(_vault.VaultPath, _item.BlobId + ".vcrypt");
-            
-            // Open read stream, read IV, and return CryptoStream
-            FileStream fsIn = new FileStream(sourceBlob, FileMode.Open, FileAccess.Read, FileShare.Read, 1048576, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            Aes aes = Aes.Create();
-            aes.Key = _vault.EncryptionKey;
-            
-            byte[] iv = new byte[aes.BlockSize / 8];
-            await fsIn.ReadAsync(iv, 0, iv.Length);
-            aes.IV = iv;
-
-            CryptoStream cs = new CryptoStream(fsIn, aes.CreateDecryptor(), CryptoStreamMode.Read);
-            return cs;
+            Stream stream = new WebDavStreamWrapper(sourceBlob, _vault.EncryptionKey, _item.Size);
+            return Task.FromResult(stream);
         }
 
         public async Task<DavStatusCode> UploadFromStreamAsync(IHttpContext httpContext, Stream source)

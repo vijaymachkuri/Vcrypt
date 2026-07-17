@@ -15,6 +15,7 @@ namespace Vcrypt.UI
 
         private void App_DispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
         {
+            MessageBox.Show($"Fatal Error: {e.Exception.Message}\n\n{e.Exception.StackTrace}", "Vcrypt Crash", MessageBoxButton.OK, MessageBoxImage.Error);
             LogCrash(e.Exception);
             e.Handled = true;
             Environment.Exit(1);
@@ -25,6 +26,14 @@ namespace Vcrypt.UI
             if (e.ExceptionObject is Exception ex)
             {
                 LogCrash(ex);
+                try
+                {
+                    Application.Current?.Dispatcher?.Invoke(() =>
+                    {
+                        MessageBox.Show($"Fatal Error: {ex.Message}\n\n{ex.StackTrace}", "Vcrypt Crash", MessageBoxButton.OK, MessageBoxImage.Error);
+                    });
+                }
+                catch { }
             }
             Environment.Exit(1);
         }

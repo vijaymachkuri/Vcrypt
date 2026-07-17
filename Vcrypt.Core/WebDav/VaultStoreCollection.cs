@@ -11,6 +11,7 @@ using NWebDav.Server.Props;
 using NWebDav.Server.Stores;
 using Vcrypt.Core.Models;
 using Vcrypt.Core.Services;
+using System.Runtime.InteropServices;
 
 namespace Vcrypt.Core.WebDav
 {
@@ -19,13 +20,54 @@ namespace Vcrypt.Core.WebDav
         private readonly AesEncryptionProvider _vault;
         private readonly string _path;
 
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        static extern bool GetDiskFreeSpaceEx(string lpDirectoryName,
+            out ulong lpFreeBytesAvailable,
+            out ulong lpTotalNumberOfBytes,
+            out ulong lpTotalNumberOfFreeBytes);
+
         public VaultStoreCollection(AesEncryptionProvider vault, string path)
         {
             _vault = vault;
             _path = path;
             PropertyManager = new PropertyManager<VaultStoreCollection>(new DavProperty<VaultStoreCollection>[]
             {
-                new DavGetResourceType<VaultStoreCollection> { Getter = (context, collection) => new[] { XElement.Parse("<D:collection xmlns:D=\"DAV:\"/>") } }
+                new DavGetResourceType<VaultStoreCollection> { Getter = (context, collection) => new[] { XElement.Parse("<D:collection xmlns:D=\"DAV:\"/>") } },
+                new DavQuotaAvailableBytes<VaultStoreCollection>
+                {
+                    Getter = (context, collection) => 
+                    {
+                        try
+                        {
+                            string targetPath = collection._vault.VaultPath;
+                            if (!targetPath.EndsWith("\\")) targetPath += "\\";
+                            if (GetDiskFreeSpaceEx(targetPath, out ulong freeAvail, out ulong totalBytes, out ulong totalFree))
+                            {
+                                return (long)totalFree;
+                            }
+                            return 2199023255552L;
+                        }
+                        catch { return 2199023255552L; /* fallback to 2TB */ }
+                    }
+                },
+                new DavQuotaUsedBytes<VaultStoreCollection>
+                {
+                    Getter = (context, collection) => 
+                    {
+                        try
+                        {
+                            string targetPath = collection._vault.VaultPath;
+                            if (!targetPath.EndsWith("\\")) targetPath += "\\";
+                            if (GetDiskFreeSpaceEx(targetPath, out ulong freeAvail, out ulong totalBytes, out ulong totalFree))
+                            {
+                                return (long)(totalBytes - totalFree);
+                            }
+                            return 0L;
+                        }
+                        catch { return 0L; }
+                    }
+                }
             });
         }
 
@@ -33,7 +75,7 @@ namespace Vcrypt.Core.WebDav
         public string UniqueKey => _path;
         public IPropertyManager PropertyManager { get; }
         public ILockingManager LockingManager => new InMemoryLockingManager();
-        public InfiniteDepthMode InfiniteDepthMode => InfiniteDepthMode.Rejected;
+        public InfiniteDepthMode InfiniteDepthMode => InfiniteDepthMode.Allowed;
 
         public Task<IStoreItem> GetItemAsync(string name, IHttpContext httpContext)
         {

@@ -15,7 +15,7 @@ namespace Vcrypt.Core.WebDav
         private CancellationTokenSource _cts;
         private Task _dispatchTask;
         
-        public string BaseUrl { get; } = "http://127.0.0.1:13374/";
+        public string BaseUrl { get; } = "http://localhost:13374/";
 
         public void Start(AesEncryptionProvider vault)
         {

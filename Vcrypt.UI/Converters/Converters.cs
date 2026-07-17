@@ -40,6 +40,9 @@ namespace Vcrypt.UI.Converters
                 if (val <= 0 || double.IsNaN(val) || double.IsInfinity(val))
                     return new GridLength(0, GridUnitType.Star);
                 
+                if (val > 0 && val < 0.005)
+                    val = 0.005;
+
                 return new GridLength(val, GridUnitType.Star);
             }
             return new GridLength(0, GridUnitType.Star);

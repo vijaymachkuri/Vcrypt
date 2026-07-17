@@ -15,6 +15,7 @@ namespace Vcrypt.Core.Services
         private string _vaultPath = string.Empty;
         private byte[] _encryptionKey = Array.Empty<byte>();
         private readonly byte[] _salt = new byte[] { 0x56, 0x63, 0x72, 0x79, 0x70, 0x74, 0x53, 0x61, 0x6c, 0x74 };
+        private readonly SemaphoreSlim _indexLock = new SemaphoreSlim(1, 1);
 
         public bool IsUnlocked { get; private set; }
         public VaultIndex? CurrentIndex { get; private set; }
@@ -78,11 +79,19 @@ namespace Vcrypt.Core.Services
 
         public async Task SaveIndexAsync()
         {
-            if (CurrentIndex == null) return;
-            string json = JsonSerializer.Serialize(CurrentIndex);
-            byte[] bytes = System.Text.Encoding.UTF8.GetBytes(json);
-            byte[] encrypted = EncryptBytes(bytes);
-            await File.WriteAllBytesAsync(Path.Combine(_vaultPath, ".index.json"), encrypted);
+            if (CurrentIndex == null || !IsUnlocked) return;
+            await _indexLock.WaitAsync();
+            try
+            {
+                string json = JsonSerializer.Serialize(CurrentIndex);
+                byte[] bytes = System.Text.Encoding.UTF8.GetBytes(json);
+                byte[] encrypted = EncryptBytes(bytes);
+                await File.WriteAllBytesAsync(Path.Combine(_vaultPath, ".index.json"), encrypted);
+            }
+            finally
+            {
+                _indexLock.Release();
+            }
         }
 
         private byte[] EncryptBytes(byte[] clearText)
@@ -124,12 +133,20 @@ namespace Vcrypt.Core.Services
             }
         }
 
-        public async Task EncryptFileAsync(string sourcePath, string targetParentPath = "")
+        public async Task EncryptFileAsync(string sourcePath, string targetParentPath = "", IProgress<CopyProgressReport>? progress = null, CopyProgressReport? state = null)
         {
             if (!IsUnlocked || CurrentIndex == null) throw new Exception("Vault is locked");
 
             string blobId = Guid.NewGuid().ToString("N");
             string destPath = Path.Combine(_vaultPath, blobId + ".vcrypt");
+
+            var fileInfo = new FileInfo(sourcePath);
+            long fileLength = fileInfo.Length;
+            
+            if (state != null)
+            {
+                state.CurrentFileName = fileInfo.Name;
+            }
 
             using (Aes aes = Aes.Create())
             {
@@ -142,7 +159,43 @@ namespace Vcrypt.Core.Services
                     using (CryptoStream cs = new CryptoStream(fsOut, aes.CreateEncryptor(), CryptoStreamMode.Write))
                     using (FileStream fsIn = new FileStream(sourcePath, FileMode.Open, FileAccess.Read))
                     {
-                        await fsIn.CopyToAsync(cs);
+                        byte[] buffer = new byte[81920]; // 80 KB chunks
+                        int read;
+                        var sw = System.Diagnostics.Stopwatch.StartNew();
+                        long intervalBytes = 0;
+
+                        while ((read = await fsIn.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                        {
+                            await cs.WriteAsync(buffer, 0, read);
+                            
+                            if (state != null && progress != null)
+                            {
+                                state.BytesTransferred += read;
+                                intervalBytes += read;
+                                
+                                // Report every 250ms
+                                if (sw.ElapsedMilliseconds > 250)
+                                {
+                                    double speed = intervalBytes / sw.Elapsed.TotalSeconds;
+                                    state.SpeedBytesPerSecond = speed;
+                                    long remainingBytes = state.TotalBytes - state.BytesTransferred;
+                                    if (speed > 0)
+                                    {
+                                        state.TimeRemaining = TimeSpan.FromSeconds(remainingBytes / speed);
+                                    }
+                                    progress.Report(state);
+                                    
+                                    sw.Restart();
+                                    intervalBytes = 0; 
+                                }
+                            }
+                        }
+                        
+                        if (state != null && progress != null)
+                        {
+                            state.ItemsRemaining = Math.Max(0, state.ItemsRemaining - 1);
+                            progress.Report(state);
+                        }
                     }
                 }
             }
@@ -156,6 +209,23 @@ namespace Vcrypt.Core.Services
             };
 
             var parent = FindFolder(CurrentIndex.Root, targetParentPath) ?? CurrentIndex.Root;
+            
+            // Handle duplicates (Overwrite existing file with the same name)
+            var existingItem = parent.Children.FirstOrDefault(c => !c.IsFolder && c.Name.Equals(item.Name, StringComparison.OrdinalIgnoreCase));
+            if (existingItem != null)
+            {
+                // Delete the old encrypted blob from disk
+                try
+                {
+                    var oldBlob = Path.Combine(_vaultPath, existingItem.BlobId + ".vcrypt");
+                    if (File.Exists(oldBlob)) File.Delete(oldBlob);
+                }
+                catch { }
+                
+                // Remove the old entry from the index
+                parent.Children.Remove(existingItem);
+            }
+
             parent.Children.Add(item);
             await SaveIndexAsync();
         }
@@ -190,6 +260,13 @@ namespace Vcrypt.Core.Services
             if (!IsUnlocked || CurrentIndex == null) return;
 
             var parent = FindFolder(CurrentIndex.Root, parentPath) ?? CurrentIndex.Root;
+            
+            // Prevent duplicate folder creation
+            if (parent.Children.Any(c => c.IsFolder && c.Name.Equals(folderName, StringComparison.OrdinalIgnoreCase)))
+            {
+                return;
+            }
+
             parent.Children.Add(new EncryptedItemModel
             {
                 Name = folderName,
@@ -208,7 +285,14 @@ namespace Vcrypt.Core.Services
                 if (!node.IsFolder && !string.IsNullOrEmpty(node.BlobId))
                 {
                     string p = Path.Combine(_vaultPath, node.BlobId + ".vcrypt");
-                    if (File.Exists(p)) File.Delete(p);
+                    try
+                    {
+                        if (File.Exists(p)) File.Delete(p);
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"Failed to delete blob {p}: {ex.Message}");
+                    }
                 }
                 foreach (var child in node.Children) DeleteBlobs(child);
             }

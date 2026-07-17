@@ -15,6 +15,7 @@ namespace Vcrypt.Infrastructure.Hardware
             if (string.IsNullOrEmpty(path)) path = "DavWWWRoot";
             var uncPath = $@"\\{uri.Host}@{uri.Port}\{path}";
 
+            // Map in Elevated Session
             var process = Process.Start(new ProcessStartInfo
             {
                 FileName = "net.exe",
@@ -24,14 +25,29 @@ namespace Vcrypt.Infrastructure.Hardware
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
             });
-
             process?.WaitForExit();
-            
-            if (process?.ExitCode != 0)
+
+            // Map in Standard User Session via Explorer VBS injection
+            try
             {
-                string error = process?.StandardError.ReadToEnd();
-                Debug.WriteLine($"Failed to map drive: {error}");
+                string vbsPath = Path.Combine(Path.GetTempPath(), "VcryptMap.vbs");
+                string vbsCode = $@"On Error Resume Next
+Set objNetwork = CreateObject(""WScript.Network"")
+objNetwork.RemoveNetworkDrive ""{driveLetter}:"", True, True
+objNetwork.MapNetworkDrive ""{driveLetter}:"", ""{uncPath}"", False
+WScript.Sleep 500
+Set oShell = CreateObject(""Shell.Application"")
+oShell.NameSpace(""{driveLetter}:\"").Self.Name = ""Vcrypt Vault""";
+                File.WriteAllText(vbsPath, vbsCode);
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    Arguments = $"\"{vbsPath}\"",
+                    UseShellExecute = true,
+                    WindowStyle = ProcessWindowStyle.Hidden
+                });
             }
+            catch { }
         }
 
         public void UnmapDrive(string driveLetter)
@@ -44,16 +60,38 @@ namespace Vcrypt.Infrastructure.Hardware
                 UseShellExecute = false
             });
             process?.WaitForExit();
-        }
 
-        public void OpenInExplorer(string driveLetter)
-        {
             try
             {
+                string vbsPath = Path.Combine(Path.GetTempPath(), "VcryptUnmap.vbs");
+                string vbsCode = $@"On Error Resume Next
+Set objNetwork = CreateObject(""WScript.Network"")
+objNetwork.RemoveNetworkDrive ""{driveLetter}:"", True, True";
+                File.WriteAllText(vbsPath, vbsCode);
                 Process.Start(new ProcessStartInfo
                 {
                     FileName = "explorer.exe",
-                    Arguments = $"{driveLetter}:\\",
+                    Arguments = $"\"{vbsPath}\"",
+                    UseShellExecute = true,
+                    WindowStyle = ProcessWindowStyle.Hidden
+                });
+            }
+            catch { }
+        }
+
+        public void OpenInExplorer(string url)
+        {
+            try
+            {
+                var uri = new Uri(url);
+                var path = uri.AbsolutePath.Trim('/');
+                if (string.IsNullOrEmpty(path)) path = "DavWWWRoot";
+                var uncPath = $@"\\{uri.Host}@{uri.Port}\{path}";
+
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    Arguments = uncPath,
                     UseShellExecute = true
                 });
             }

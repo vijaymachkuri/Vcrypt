@@ -64,14 +64,24 @@
                         <ComboBox ItemsSource="{Binding AvailableAlgorithms}" SelectedItem="{Binding SelectedAlgorithm, UpdateSourceTrigger=PropertyChanged}" Width="150" />
                     </ui:CardControl>
 
-                    <ui:CardControl Icon="{ui:SymbolIcon Document24}" Margin="0,0,0,10">
+                    <ui:CardControl Margin="0,0,0,10">
+                        <ui:CardControl.Header>
+                            <StackPanel>
+                                <TextBlock Text="Format &amp; Hide Partition" FontWeight="SemiBold"/>
+                                <TextBlock Text="WARNING: Deletes all existing files!" FontSize="12" Foreground="#ff4757"/>
+                            </StackPanel>
+                        </ui:CardControl.Header>
+                        <ui:ToggleSwitch IsChecked="{Binding IsFormatAndHide, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                    </ui:CardControl>
+
+                    <ui:CardControl Icon="{ui:SymbolIcon Document24}" Margin="0,0,0,10" Visibility="{Binding IsFormatAndHide, Converter={StaticResource BoolToVisConverter}}">
                         <ui:CardControl.Header>
                             <TextBlock Text="Public File System" FontWeight="SemiBold"/>
                         </ui:CardControl.Header>
                         <ComboBox ItemsSource="{Binding AvailableFileSystems}" SelectedItem="{Binding SelectedFileSystem, UpdateSourceTrigger=PropertyChanged}" Width="150" />
                     </ui:CardControl>
 
-                    <ui:CardControl Margin="0,0,0,10">
+                    <ui:CardControl Margin="0,0,0,10" Visibility="{Binding IsFormatAndHide, Converter={StaticResource BoolToVisConverter}}">
                         <ui:CardControl.Header>
                             <StackPanel>
                                 <TextBlock Text="Public Partition Size (MB)" FontWeight="SemiBold"/>
@@ -88,7 +98,7 @@
                         <ui:PasswordBox Password="{Binding SetupPassword, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="150" />
                     </ui:CardControl>
 
-                    <ui:Button Content="Encrypt &amp; Format Drive" Appearance="Primary" Command="{Binding FormatAndLockCommand}" HorizontalAlignment="Stretch" Padding="0,10" FontSize="16" />
+                    <ui:Button Content="{Binding SetupButtonText}" Appearance="Primary" Command="{Binding FormatAndLockCommand}" HorizontalAlignment="Stretch" Padding="0,10" FontSize="16" />
                 </StackPanel>
             </Grid>
 
@@ -108,7 +118,7 @@
             </Grid>
 
             <!-- VAULT / FILE EXPLORER VIEW -->
-            <Grid Visibility="{Binding CurrentView, Converter={StaticResource StringToVisConverter}, ConverterParameter='Vault'}">
+            <Grid Visibility="{Binding CurrentView, Converter={StaticResource StringToVisConverter}, ConverterParameter='Vault'}" AllowDrop="True" Drop="Vault_Drop" Background="Transparent">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
@@ -116,6 +126,8 @@
 
                 <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
                     <ui:Button Icon="{ui:SymbolIcon LockClosed24}" Content="Lock Vault" Command="{Binding LockVaultCommand}" Margin="0,0,10,0"/>
+                    <ui:Button Icon="{ui:SymbolIcon DocumentAdd24}" Content="Encrypt Files" Command="{Binding AddFilesCommand}" Appearance="Primary" Margin="0,0,10,0" ToolTip="Use this if Windows says there is not enough space to copy large files."/>
+                    <ui:Button Icon="{ui:SymbolIcon FolderAdd24}" Content="Encrypt Folders" Command="{Binding AddFoldersCommand}" Appearance="Primary" Margin="0,0,10,0" ToolTip="Select entire folders to encrypt."/>
                 </StackPanel>
 
                 <StackPanel Grid.Row="1" VerticalAlignment="Center" HorizontalAlignment="Center">
@@ -160,27 +172,45 @@
                         <WrapPanel HorizontalAlignment="Center" Margin="0,0,0,10">
                             <StackPanel Orientation="Horizontal" Margin="0,0,15,5">
                                 <Ellipse Width="8" Height="8" Fill="#FFCC00" Margin="0,0,5,0" VerticalAlignment="Center"/>
-                                <TextBlock Text="Images" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                <TextBlock FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}">
+                                    <Run Text="Images " />
+                                    <Run Text="{Binding ImagesSizeString}" FontWeight="SemiBold" Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                </TextBlock>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,0,15,5">
                                 <Ellipse Width="8" Height="8" Fill="#AF52DE" Margin="0,0,5,0" VerticalAlignment="Center"/>
-                                <TextBlock Text="Videos" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                <TextBlock FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}">
+                                    <Run Text="Videos " />
+                                    <Run Text="{Binding VideosSizeString}" FontWeight="SemiBold" Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                </TextBlock>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,0,15,5">
                                 <Ellipse Width="8" Height="8" Fill="#FF2D55" Margin="0,0,5,0" VerticalAlignment="Center"/>
-                                <TextBlock Text="Audio" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                <TextBlock FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}">
+                                    <Run Text="Audio " />
+                                    <Run Text="{Binding AudioSizeString}" FontWeight="SemiBold" Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                </TextBlock>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,0,15,5">
                                 <Ellipse Width="8" Height="8" Fill="#007AFF" Margin="0,0,5,0" VerticalAlignment="Center"/>
-                                <TextBlock Text="Docs" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                <TextBlock FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}">
+                                    <Run Text="Docs " />
+                                    <Run Text="{Binding DocumentsSizeString}" FontWeight="SemiBold" Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                </TextBlock>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,0,15,5">
                                 <Ellipse Width="8" Height="8" Fill="#FF3B30" Margin="0,0,5,0" VerticalAlignment="Center"/>
-                                <TextBlock Text="Apps" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                <TextBlock FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}">
+                                    <Run Text="Apps " />
+                                    <Run Text="{Binding AppsSizeString}" FontWeight="SemiBold" Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                </TextBlock>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
                                 <Ellipse Width="8" Height="8" Fill="#8E8E93" Margin="0,0,5,0" VerticalAlignment="Center"/>
-                                <TextBlock Text="Other" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                <TextBlock FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}">
+                                    <Run Text="Other " />
+                                    <Run Text="{Binding OtherSizeString}" FontWeight="SemiBold" Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                </TextBlock>
                             </StackPanel>
                         </WrapPanel>
 
@@ -205,21 +235,10 @@
 
         <!-- FULL SCREEN PROCESSING OVERLAY -->
         <Grid Grid.Row="1" Visibility="{Binding IsProcessing, Converter={StaticResource BoolToVisConverter}}" Background="#D9000000">
-            <Border Background="{DynamicResource SolidBackgroundFillColorBaseBrush}" CornerRadius="12" VerticalAlignment="Center" HorizontalAlignment="Center" Padding="40" MinWidth="350">
+            <Border Background="{DynamicResource SolidBackgroundFillColorBaseBrush}" CornerRadius="12" VerticalAlignment="Center" HorizontalAlignment="Center" Padding="40" MinWidth="450">
                 <StackPanel>
-                    <TextBlock Text="{Binding StatusMessage}" FontSize="20" FontWeight="SemiBold" TextAlignment="Center" Margin="0,0,0,20" />
-                    <ProgressBar Value="{Binding ProgressValue}" Minimum="0" Maximum="100" Height="8" Foreground="#28C840" Margin="0,0,0,15">
-                        <ProgressBar.Style>
-                            <Style TargetType="ProgressBar" BasedOn="{StaticResource {x:Type ProgressBar}}">
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding ProgressValue}" Value="0">
-                                        <Setter Property="IsIndeterminate" Value="True"/>
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </ProgressBar.Style>
-                    </ProgressBar>
-                    <TextBlock Text="{Binding ProgressValue, StringFormat={}{0}%}" TextAlignment="Center" FontSize="14" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,0,0,15">
+                    <TextBlock Text="{Binding StatusMessage}" FontSize="20" FontWeight="SemiBold" TextAlignment="Left" Margin="0,0,0,10" />
+                    <TextBlock Text="{Binding ProgressValue, StringFormat={}{0}% complete}" TextAlignment="Left" FontSize="16" Margin="0,0,0,20">
                         <TextBlock.Style>
                             <Style TargetType="TextBlock">
                                 <Setter Property="Visibility" Value="Visible"/>
@@ -231,7 +250,31 @@
                             </Style>
                         </TextBlock.Style>
                     </TextBlock>
-                    <TextBox Text="{Binding SetupLogs}" Height="150" IsReadOnly="True" VerticalScrollBarVisibility="Auto" TextWrapping="Wrap" Background="Black" Foreground="LightGreen" FontFamily="Consolas">
+                    <ProgressBar Value="{Binding ProgressValue}" Minimum="0" Maximum="100" Height="8" Foreground="#28C840" Margin="0,0,0,20">
+                        <ProgressBar.Style>
+                            <Style TargetType="ProgressBar" BasedOn="{StaticResource {x:Type ProgressBar}}">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding ProgressValue}" Value="0">
+                                        <Setter Property="IsIndeterminate" Value="True"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ProgressBar.Style>
+                    </ProgressBar>
+                    <Grid Visibility="{Binding IsFileTransferActive, Converter={StaticResource BoolToVisConverter}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0">
+                            <TextBlock Text="{Binding CurrentFileName, StringFormat=Name: {0}}" FontSize="14" Margin="0,0,0,5" TextTrimming="CharacterEllipsis" MaxWidth="300" />
+                            <TextBlock Text="{Binding TimeRemainingString, StringFormat=Time remaining: {0}}" FontSize="14" Margin="0,0,0,5" />
+                            <TextBlock Text="{Binding ItemsRemainingString, StringFormat=Items remaining: {0}}" FontSize="14" />
+                        </StackPanel>
+                        <TextBlock Grid.Column="1" Text="{Binding SpeedString, StringFormat=Speed: {0}}" FontSize="14" HorizontalAlignment="Right" VerticalAlignment="Bottom" />
+                    </Grid>
+                    
+                    <TextBox Text="{Binding SetupLogs}" Height="150" IsReadOnly="True" VerticalScrollBarVisibility="Auto" TextWrapping="Wrap" Background="Black" Foreground="LightGreen" FontFamily="Consolas" Margin="0,20,0,0">
                         <TextBox.Style>
                             <Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
                                 <Setter Property="Visibility" Value="Visible"/>
