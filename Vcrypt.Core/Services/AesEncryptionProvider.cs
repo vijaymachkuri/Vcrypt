@@ -133,7 +133,15 @@ namespace Vcrypt.Core.Services
             }
         }
 
-        public async Task EncryptFileAsync(string sourcePath, string targetParentPath = "", IProgress<CopyProgressReport>? progress = null, CopyProgressReport? state = null)
+        private async Task<string> ComputeFileHashAsync(string filePath)
+        {
+            using var sha256 = SHA256.Create();
+            using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, true);
+            var hashBytes = await sha256.ComputeHashAsync(stream);
+            return BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
+        }
+
+        public async Task EncryptFileAsync(string sourcePath, string targetParentPath = "", IProgress<CopyProgressReport>? progress = null, CopyProgressReport? state = null, Func<string, bool, Task<DuplicateResolution>>? onDuplicateFound = null)
         {
             if (!IsUnlocked || CurrentIndex == null) throw new Exception("Vault is locked");
 
@@ -147,17 +155,62 @@ namespace Vcrypt.Core.Services
 
             var parent = FindFolder(CurrentIndex.Root, targetParentPath) ?? CurrentIndex.Root;
 
-            // Handle duplicates early: Skip if the file already exists to save time and prevent redundant copying
             var existingItem = parent.Children.FirstOrDefault(c => !c.IsFolder && c.Name.Equals(fileInfo.Name, StringComparison.OrdinalIgnoreCase));
+            
+            // Generate hash only if we need to check a duplicate or if we want to store it
+            string fileHash = string.Empty;
             if (existingItem != null)
             {
                 if (state != null && progress != null)
                 {
-                    state.BytesTransferred += fileLength;
-                    state.ItemsRemaining = Math.Max(0, state.ItemsRemaining - 1);
+                    state.SpeedBytesPerSecond = 0;
                     progress.Report(state);
                 }
-                return;
+                
+                fileHash = await ComputeFileHashAsync(sourcePath);
+                bool isContentIdentical = string.Equals(existingItem.FileHash, fileHash, StringComparison.OrdinalIgnoreCase);
+
+                if (onDuplicateFound != null)
+                {
+                    var resolution = await onDuplicateFound(fileInfo.Name, isContentIdentical);
+                    
+                    if (resolution == DuplicateResolution.Skip || resolution == DuplicateResolution.SkipAll)
+                    {
+                        if (state != null && progress != null)
+                        {
+                            state.BytesTransferred += fileLength;
+                            state.ItemsRemaining = Math.Max(0, state.ItemsRemaining - 1);
+                            progress.Report(state);
+                        }
+                        return;
+                    }
+                    else // Replace or ReplaceAll
+                    {
+                        try
+                        {
+                            var oldBlob = Path.Combine(_vaultPath, existingItem.BlobId + ".vcrypt");
+                            if (File.Exists(oldBlob)) File.Delete(oldBlob);
+                        }
+                        catch { }
+                        parent.Children.Remove(existingItem);
+                    }
+                }
+                else
+                {
+                    // Default behavior if no UI callback: skip if identical hash, replace otherwise (or skip always as before)
+                    if (state != null && progress != null)
+                    {
+                        state.BytesTransferred += fileLength;
+                        state.ItemsRemaining = Math.Max(0, state.ItemsRemaining - 1);
+                        progress.Report(state);
+                    }
+                    return;
+                }
+            }
+            else
+            {
+                // Compute hash for indexing even if no conflict
+                fileHash = await ComputeFileHashAsync(sourcePath);
             }
 
             string blobId = Guid.NewGuid().ToString("N");
@@ -220,7 +273,8 @@ namespace Vcrypt.Core.Services
                 Name = Path.GetFileName(sourcePath),
                 IsFolder = false,
                 Size = new FileInfo(sourcePath).Length,
-                BlobId = blobId
+                BlobId = blobId,
+                FileHash = fileHash
             };
 
             parent.Children.Add(item);

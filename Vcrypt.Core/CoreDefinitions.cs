@@ -4,12 +4,21 @@ using System.Threading.Tasks;
 
 namespace Vcrypt.Core.Models
 {
+    public enum DuplicateResolution
+    {
+        Skip,
+        Replace,
+        SkipAll,
+        ReplaceAll
+    }
+
     public class EncryptedItemModel
     {
         public string Name { get; set; } = string.Empty;
         public bool IsFolder { get; set; }
         public long Size { get; set; }
         public string BlobId { get; set; } = string.Empty;
+        public string FileHash { get; set; } = string.Empty;
         public DateTime CreatedAt { get; set; } = DateTime.Now;
         public List<EncryptedItemModel> Children { get; set; } = new();
     }
@@ -40,7 +49,7 @@ namespace Vcrypt.Core.Interfaces
         Task InitializeNewVaultAsync(string password);
         Task<bool> UnlockAsync(string password);
         void Lock();
-        Task EncryptFileAsync(string sourcePath, string targetParentPath = "", IProgress<CopyProgressReport>? progress = null, CopyProgressReport? state = null);
+        Task EncryptFileAsync(string sourcePath, string targetParentPath = "", IProgress<CopyProgressReport>? progress = null, CopyProgressReport? state = null, Func<string, bool, Task<DuplicateResolution>>? onDuplicateFound = null);
         Task DecryptFileAsync(EncryptedItemModel file, string destinationDirectory);
         Task DeleteItemAsync(EncryptedItemModel item);
         Task CreateFolderAsync(string folderName, string parentPath = "");

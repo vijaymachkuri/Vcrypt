@@ -1,0 +1,1 @@
+using System; using NWebDav.Server.Props; class Program { static void Main() { foreach(var t in typeof(DavProperty<object>).Assembly.GetTypes()) { if (t.Namespace != null && t.Namespace.Contains(" Props\)) Console.WriteLine(t.Name); } } }

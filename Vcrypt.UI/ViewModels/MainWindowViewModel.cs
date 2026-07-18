@@ -813,9 +813,36 @@ namespace Vcrypt.UI.ViewModels
                     ItemsRemainingString = $"{report.ItemsRemaining} ({itemsGb:0.0} GB)";
                 });
 
+                Vcrypt.Core.Models.DuplicateResolution? bulkResolution = null;
+
+                Func<string, bool, Task<Vcrypt.Core.Models.DuplicateResolution>> onDuplicate = async (fileName, isIdentical) =>
+                {
+                    if (bulkResolution.HasValue) return bulkResolution.Value;
+
+                    Vcrypt.Core.Models.DuplicateResolution result = Vcrypt.Core.Models.DuplicateResolution.Skip;
+                    
+                    await App.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        var dialog = new Vcrypt.UI.Views.DuplicateResolutionDialog(fileName, isIdentical);
+                        if (App.Current.MainWindow != null)
+                        {
+                            dialog.Owner = App.Current.MainWindow;
+                        }
+                        dialog.ShowDialog();
+                        result = dialog.Result;
+                    });
+
+                    if (result == Vcrypt.Core.Models.DuplicateResolution.SkipAll || result == Vcrypt.Core.Models.DuplicateResolution.ReplaceAll)
+                    {
+                        bulkResolution = result;
+                    }
+
+                    return result;
+                };
+
                 foreach (var item in items)
                 {
-                    await ProcessItemRecursive(item, CurrentPath, progress, progressReport);
+                    await ProcessItemRecursive(item, CurrentPath, progress, progressReport, onDuplicate);
                 }
                 RefreshVaultView();
             }
@@ -826,13 +853,13 @@ namespace Vcrypt.UI.ViewModels
             IsProcessing = false;
         }
 
-        private async Task ProcessItemRecursive(string localPath, string vaultTargetFolder, IProgress<CopyProgressReport> progress, CopyProgressReport state)
+        private async Task ProcessItemRecursive(string localPath, string vaultTargetFolder, IProgress<CopyProgressReport> progress, CopyProgressReport state, Func<string, bool, Task<Vcrypt.Core.Models.DuplicateResolution>> onDuplicate)
         {
             try
             {
                 if (File.Exists(localPath))
                 {
-                    await _vault.EncryptFileAsync(localPath, vaultTargetFolder, progress, state);
+                    await _vault.EncryptFileAsync(localPath, vaultTargetFolder, progress, state, onDuplicate);
                 }
                 else if (Directory.Exists(localPath))
                 {
@@ -848,12 +875,10 @@ namespace Vcrypt.UI.ViewModels
 
                     await _vault.CreateFolderAsync(folderName, vaultTargetFolder);
                     
-                    string newVaultFolder = string.IsNullOrEmpty(vaultTargetFolder) ? folderName : vaultTargetFolder + "/" + folderName;
-
-                    string[] entries = Directory.GetFileSystemEntries(localPath);
-                    foreach (string item in entries)
+                    string newTargetFolder = string.IsNullOrEmpty(vaultTargetFolder) ? folderName : $"{vaultTargetFolder}/{folderName}";
+                    foreach (var subItem in Directory.GetFileSystemEntries(localPath))
                     {
-                        await ProcessItemRecursive(item, newVaultFolder, progress, state);
+                        await ProcessItemRecursive(subItem, newTargetFolder, progress, state, onDuplicate);
                     }
                 }
             }
