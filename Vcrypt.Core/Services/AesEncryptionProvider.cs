@@ -137,9 +137,6 @@ namespace Vcrypt.Core.Services
         {
             if (!IsUnlocked || CurrentIndex == null) throw new Exception("Vault is locked");
 
-            string blobId = Guid.NewGuid().ToString("N");
-            string destPath = Path.Combine(_vaultPath, blobId + ".vcrypt");
-
             var fileInfo = new FileInfo(sourcePath);
             long fileLength = fileInfo.Length;
             
@@ -147,6 +144,24 @@ namespace Vcrypt.Core.Services
             {
                 state.CurrentFileName = fileInfo.Name;
             }
+
+            var parent = FindFolder(CurrentIndex.Root, targetParentPath) ?? CurrentIndex.Root;
+
+            // Handle duplicates early: Skip if the file already exists to save time and prevent redundant copying
+            var existingItem = parent.Children.FirstOrDefault(c => !c.IsFolder && c.Name.Equals(fileInfo.Name, StringComparison.OrdinalIgnoreCase));
+            if (existingItem != null)
+            {
+                if (state != null && progress != null)
+                {
+                    state.BytesTransferred += fileLength;
+                    state.ItemsRemaining = Math.Max(0, state.ItemsRemaining - 1);
+                    progress.Report(state);
+                }
+                return;
+            }
+
+            string blobId = Guid.NewGuid().ToString("N");
+            string destPath = Path.Combine(_vaultPath, blobId + ".vcrypt");
 
             using (Aes aes = Aes.Create())
             {
@@ -207,24 +222,6 @@ namespace Vcrypt.Core.Services
                 Size = new FileInfo(sourcePath).Length,
                 BlobId = blobId
             };
-
-            var parent = FindFolder(CurrentIndex.Root, targetParentPath) ?? CurrentIndex.Root;
-            
-            // Handle duplicates (Overwrite existing file with the same name)
-            var existingItem = parent.Children.FirstOrDefault(c => !c.IsFolder && c.Name.Equals(item.Name, StringComparison.OrdinalIgnoreCase));
-            if (existingItem != null)
-            {
-                // Delete the old encrypted blob from disk
-                try
-                {
-                    var oldBlob = Path.Combine(_vaultPath, existingItem.BlobId + ".vcrypt");
-                    if (File.Exists(oldBlob)) File.Delete(oldBlob);
-                }
-                catch { }
-                
-                // Remove the old entry from the index
-                parent.Children.Remove(existingItem);
-            }
 
             parent.Children.Add(item);
             await SaveIndexAsync();
