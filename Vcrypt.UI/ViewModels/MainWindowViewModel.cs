@@ -16,6 +16,38 @@ using System.Windows.Threading;
 
 namespace Vcrypt.UI.ViewModels
 {
+    public class DuplicateFileItem : ObservableObject
+    {
+        public EncryptedItemModel Model { get; set; } = null!;
+        public string Path { get; set; } = "";
+        
+        private bool _isSelected = false;
+        public bool IsSelected 
+        { 
+            get => _isSelected; 
+            set => SetProperty(ref _isSelected, value); 
+        }
+    }
+
+    public class DuplicateGroup
+    {
+        public string GroupTitle { get; set; } = "";
+        public ObservableCollection<DuplicateFileItem> Files { get; set; } = new();
+    }
+    
+    public class EmptyFolderItem : ObservableObject
+    {
+        public EncryptedItemModel Model { get; set; } = null!;
+        public string Path { get; set; } = "";
+        
+        private bool _isSelected = false;
+        public bool IsSelected 
+        { 
+            get => _isSelected; 
+            set => SetProperty(ref _isSelected, value); 
+        }
+    }
+
     public partial class MainWindowViewModel : ObservableObject
     {
         private readonly IUsbMonitorService _usbMonitor;
@@ -23,6 +55,7 @@ namespace Vcrypt.UI.ViewModels
         private IEncryptionProvider? _vault;
         private readonly WebDavServerManager _webDavManager;
         private readonly DriveMapper _driveMapper;
+        private readonly ILocalAiService _aiService;
         private const string MOUNT_DRIVE = "Z";
         private DispatcherTimer _capacityTimer;
         private string _mountPath = "";
@@ -105,13 +138,32 @@ namespace Vcrypt.UI.ViewModels
         private bool _isVaultCapacityVisible = false;
 
         [ObservableProperty]
+        private long _vaultCapacity = 0;
+
+        [ObservableProperty]
+        private long _vaultFree = 0;
+        
+        [ObservableProperty]
+        private bool _isDuplicateDeepScan = false;
+        
+        public ObservableCollection<DuplicateGroup> DuplicateGroups { get; } = new();
+
+        [ObservableProperty]
+        private bool _hasDuplicateResults = false;
+
+        public ObservableCollection<EmptyFolderItem> EmptyFolders { get; } = new();
+
+        [ObservableProperty]
+        private bool _hasEmptyFolderResults = false;
+
+        [ObservableProperty]
+        private double _vaultUsedPercentage = 0;
+
+        [ObservableProperty]
         private string _vaultCapacityString = "";
 
         [ObservableProperty]
         private string _vaultFreeString = "";
-
-        [ObservableProperty]
-        private double _vaultUsedPercentage = 0;
 
         [ObservableProperty]
         private double _imagesShare = 0;
@@ -164,6 +216,14 @@ namespace Vcrypt.UI.ViewModels
             _usbMonitor.DriveInserted += UsbMonitor_DriveInserted;
             _usbMonitor.DriveRemoved += UsbMonitor_DriveRemoved;
             _usbMonitor.StartMonitoring();
+            _aiService = new Vcrypt.Infrastructure.AI.LocalAiService();
+
+            // AI Hardware check
+            IsAiSupported = _aiService.MeetsHardwareRequirements();
+            AiButtonOpacity = IsAiSupported ? 1.0 : 0.5;
+            AiButtonTooltip = IsAiSupported ? "Open Virtual Assistant" : "Your PC does not meet the 8GB RAM requirement for the local AI.";
+            
+            AiViewModel = new AiChatViewModel(_aiService, this);
 
             _capacityTimer = new DispatcherTimer();
             _capacityTimer.Interval = System.TimeSpan.FromSeconds(2);
@@ -633,8 +693,25 @@ namespace Vcrypt.UI.ViewModels
         }
 
         [RelayCommand]
+        private void CancelOperation()
+        {
+            // Set flag to stop current operation (Ideally wire CancellationToken to all methods)
+            IsFileTransferActive = false;
+            StatusMessage = "Operation Cancelled.";
+        }
+
+        [RelayCommand]
         private async Task LockVaultAsync()
         {
+            if (IsFileTransferActive)
+            {
+                var result = MessageBox.Show("A file transfer or background operation is currently running. Locking the vault now could cause data corruption. Are you sure you want to force lock?", "Warning: Active Transfer", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                if (result != MessageBoxResult.Yes)
+                {
+                    return;
+                }
+            }
+
             IsProcessing = true;
             IsFileTransferActive = false;
             StatusMessage = "Locking Vault...";
@@ -647,7 +724,11 @@ namespace Vcrypt.UI.ViewModels
             VaultFiles.Clear();
             _vault = null;
 
-            await _partitionManager.UnmountVaultAsync(DetectedDriveLetter);
+            // Run PowerShell unmount in the background so the UI instantly updates for a faster experience
+            _ = Task.Run(async () =>
+            {
+                await _partitionManager.UnmountVaultAsync(DetectedDriveLetter);
+            });
             
             CurrentView = "Unlock";
             StatusMessage = $"Locked Vault Detected ({DetectedDriveLetter})";
@@ -850,7 +931,11 @@ namespace Vcrypt.UI.ViewModels
             {
                 MessageBox.Show("Error adding items: " + ex.Message);
             }
-            IsProcessing = false;
+            finally
+            {
+                IsProcessing = false;
+                IsFileTransferActive = false;
+            }
         }
 
         private async Task ProcessItemRecursive(string localPath, string vaultTargetFolder, IProgress<CopyProgressReport> progress, CopyProgressReport state, Func<string, bool, Task<Vcrypt.Core.Models.DuplicateResolution>> onDuplicate)
@@ -902,6 +987,12 @@ namespace Vcrypt.UI.ViewModels
             string folderName = "New Folder"; // We will add a dialog logic here or let user rename
             await _vault.CreateFolderAsync(folderName, CurrentPath);
             RefreshVaultView();
+        }
+
+        [RelayCommand]
+        private void Navigate(string page)
+        {
+            SelectedVaultPage = page;
         }
 
         [RelayCommand]
@@ -992,6 +1083,260 @@ namespace Vcrypt.UI.ViewModels
                 await _vault.DeleteItemAsync(item);
                 RefreshVaultView();
             }
+        }
+
+        [RelayCommand]
+        private async Task FindDuplicates()
+        {
+            if (_vault == null || _vault.CurrentIndex == null) return;
+            
+            DuplicateGroups.Clear();
+            HasDuplicateResults = false;
+            
+            IsProcessing = true;
+            ProgressValue = 0; // Indeterminate
+            StatusMessage = "Scanning for duplicates...";
+
+            await Task.Run(async () =>
+            {
+                var allFiles = new List<DuplicateFileItem>();
+                void CollectFiles(EncryptedItemModel node, string currentPath)
+                {
+                    if (node.IsFolder)
+                    {
+                        string path = string.IsNullOrEmpty(currentPath) ? node.Name : currentPath + "\\" + node.Name;
+                        foreach (var child in node.Children)
+                        {
+                            CollectFiles(child, node.Name == "ROOT" ? "" : path);
+                        }
+                    }
+                    else
+                    {
+                        allFiles.Add(new DuplicateFileItem
+                        {
+                            Model = node,
+                            Path = string.IsNullOrEmpty(currentPath) ? node.Name : currentPath + "\\" + node.Name
+                        });
+                    }
+                }
+
+                if (_vault.CurrentIndex?.Root != null)
+                {
+                    CollectFiles(_vault.CurrentIndex.Root, "");
+                }
+
+                if (IsDuplicateDeepScan)
+                {
+                    var sizeGroups = allFiles.GroupBy(x => x.Model.Size).Where(g => g.Count() > 1).SelectMany(g => g).ToList();
+                    
+                    for (int i = 0; i < sizeGroups.Count; i++)
+                    {
+                        var item = sizeGroups[i];
+                        if (string.IsNullOrEmpty(item.Model.FileHash))
+                        {
+                            App.Current.Dispatcher.Invoke(() => StatusMessage = $"Deep Scanning {i+1}/{sizeGroups.Count}...");
+                            item.Model.FileHash = await _vault.ComputeHashForEncryptedBlobAsync(item.Model);
+                        }
+                    }
+
+                    var hashGroups = sizeGroups
+                        .Where(x => !string.IsNullOrEmpty(x.Model.FileHash))
+                        .GroupBy(x => x.Model.FileHash)
+                        .Where(g => g.Count() > 1);
+
+                    foreach (var group in hashGroups)
+                    {
+                        var dupGroup = new DuplicateGroup
+                        {
+                            GroupTitle = $"Matching Content Hash ({FormatBytes(group.First().Model.Size)})"
+                        };
+                        foreach (var file in group)
+                        {
+                            dupGroup.Files.Add(file);
+                        }
+                        for (int i = 1; i < dupGroup.Files.Count; i++)
+                            dupGroup.Files[i].IsSelected = true;
+
+                        App.Current.Dispatcher.Invoke(() => DuplicateGroups.Add(dupGroup));
+                    }
+                }
+                else
+                {
+                    var fastGroups = allFiles
+                        .GroupBy(x => new { x.Model.Size, x.Model.Name })
+                        .Where(g => g.Count() > 1);
+
+                    foreach (var group in fastGroups)
+                    {
+                        var dupGroup = new DuplicateGroup
+                        {
+                            GroupTitle = $"{group.Key.Name} ({FormatBytes(group.Key.Size)})"
+                        };
+                        foreach (var file in group)
+                        {
+                            dupGroup.Files.Add(file);
+                        }
+                        for (int i = 1; i < dupGroup.Files.Count; i++)
+                            dupGroup.Files[i].IsSelected = true;
+                            
+                        App.Current.Dispatcher.Invoke(() => DuplicateGroups.Add(dupGroup));
+                    }
+                }
+            });
+
+            IsProcessing = false;
+            
+            if (DuplicateGroups.Count == 0)
+            {
+                MessageBox.Show("No duplicates found!", "Scan Complete", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            else
+            {
+                HasDuplicateResults = true;
+            }
+        }
+        
+        [RelayCommand]
+        private async Task DeleteSelectedDuplicates()
+        {
+            var selected = DuplicateGroups.SelectMany(g => g.Files).Where(f => f.IsSelected).ToList();
+            if (selected.Count == 0) return;
+
+            var result = MessageBox.Show($"Are you sure you want to delete {selected.Count} duplicate files?", "Confirm", MessageBoxButton.YesNo);
+            if (result == MessageBoxResult.Yes)
+            {
+                IsProcessing = true;
+                ProgressValue = 0;
+                StatusMessage = "Deleting selected duplicates...";
+                
+                foreach (var item in selected)
+                {
+                    await _vault!.DeleteItemAsync(item.Model);
+                }
+                
+                IsProcessing = false;
+                DuplicateGroups.Clear();
+                HasDuplicateResults = false;
+                RefreshVaultView();
+                MessageBox.Show("Duplicates deleted successfully.", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+
+        [RelayCommand]
+        private async Task FindEmptyFolders()
+        {
+            if (_vault == null || _vault.CurrentIndex == null) return;
+            
+            EmptyFolders.Clear();
+            HasEmptyFolderResults = false;
+            
+            IsProcessing = true;
+            ProgressValue = 0;
+            StatusMessage = "Scanning for empty folders...";
+
+            await Task.Run(() =>
+            {
+                void ScanFolders(EncryptedItemModel node, string currentPath)
+                {
+                    if (node.IsFolder && node.Name != "ROOT")
+                    {
+                        string path = string.IsNullOrEmpty(currentPath) ? node.Name : currentPath + "\\" + node.Name;
+                        if (node.Children.Count == 0)
+                        {
+                            App.Current.Dispatcher.Invoke(() =>
+                            {
+                                EmptyFolders.Add(new EmptyFolderItem
+                                {
+                                    Model = node,
+                                    Path = path,
+                                    IsSelected = true
+                                });
+                            });
+                        }
+                        else
+                        {
+                            foreach (var child in node.Children.Where(c => c.IsFolder))
+                            {
+                                ScanFolders(child, path);
+                            }
+                        }
+                    }
+                    else if (node.Name == "ROOT")
+                    {
+                        foreach (var child in node.Children.Where(c => c.IsFolder))
+                        {
+                            ScanFolders(child, "");
+                        }
+                    }
+                }
+
+                if (_vault.CurrentIndex?.Root != null)
+                {
+                    ScanFolders(_vault.CurrentIndex.Root, "");
+                }
+            });
+
+            IsProcessing = false;
+            
+            if (EmptyFolders.Count == 0)
+            {
+                MessageBox.Show("No empty folders found!", "Scan Complete", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            else
+            {
+                HasEmptyFolderResults = true;
+            }
+        }
+        
+        [RelayCommand]
+        private async Task DeleteSelectedEmptyFolders()
+        {
+            var selected = EmptyFolders.Where(f => f.IsSelected).ToList();
+            if (selected.Count == 0) return;
+
+            var result = MessageBox.Show($"Are you sure you want to delete {selected.Count} empty folders?", "Confirm", MessageBoxButton.YesNo);
+            if (result == MessageBoxResult.Yes)
+            {
+                IsProcessing = true;
+                ProgressValue = 0;
+                StatusMessage = "Deleting selected folders...";
+                
+                foreach (var item in selected)
+                {
+                    await _vault!.DeleteItemAsync(item.Model);
+                }
+                
+                IsProcessing = false;
+                EmptyFolders.Clear();
+                HasEmptyFolderResults = false;
+                RefreshVaultView();
+                MessageBox.Show("Folders deleted successfully.", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+
+        [ObservableProperty]
+        private bool _isAiSupported = true;
+
+        [ObservableProperty]
+        private AiChatViewModel _aiViewModel;
+
+        [ObservableProperty]
+        private string _selectedVaultPage = "Home";
+
+        [ObservableProperty]
+        private bool _isAiPanelVisible = false;
+
+        [ObservableProperty]
+        private double _aiButtonOpacity = 1.0;
+
+        [ObservableProperty]
+        private string _aiButtonTooltip = "";
+
+        [RelayCommand]
+        private void OpenAiAssistant()
+        {
+            if (!IsAiSupported) return;
+            IsAiPanelVisible = !IsAiPanelVisible;
         }
     }
 }

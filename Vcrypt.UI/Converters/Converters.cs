@@ -22,12 +22,32 @@ namespace Vcrypt.UI.Converters
     {
         public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
         {
-            return (value is bool b && b) ? Visibility.Visible : Visibility.Collapsed;
+            bool b = value is bool val && val;
+            if (parameter?.ToString() == "Inverse")
+            {
+                b = !b;
+            }
+            return b ? Visibility.Visible : Visibility.Collapsed;
         }
 
         public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
         {
             throw new NotImplementedException();
+        }
+    }
+
+    public class InverseBoolConverter : IValueConverter
+    {
+        public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+        {
+            if (value is bool b) return !b;
+            return false;
+        }
+
+        public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+        {
+            if (value is bool b) return !b;
+            return false;
         }
     }
 

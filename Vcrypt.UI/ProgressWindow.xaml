@@ -1,0 +1,51 @@
+<ui:FluentWindow x:Class="Vcrypt.UI.ProgressWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+        Title="Vcrypt Operations" Height="250" Width="450"
+        WindowStartupLocation="CenterOwner" 
+        ExtendsContentIntoTitleBar="True"
+        WindowBackdropType="Mica"
+        Background="Transparent"
+        Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+        ResizeMode="NoResize">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <ui:TitleBar Grid.Row="0" Title="{Binding StatusMessage}" Icon="{ui:SymbolIcon Copy24}"/>
+
+        <Grid Grid.Row="1" Margin="20">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0" Text="{Binding StatusMessage}" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,5"/>
+            
+            <!-- File name being processed -->
+            <TextBlock Grid.Row="1" Text="{Binding CurrentFileName}" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,0,0,15"/>
+
+            <!-- Progress Bar -->
+            <ProgressBar Grid.Row="2" Value="{Binding ProgressValue}" Minimum="0" Maximum="100" Height="20" Margin="0,0,0,10"/>
+
+            <!-- Speed and Time -->
+            <Grid Grid.Row="3">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{Binding TimeRemainingString}" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                <TextBlock Grid.Column="1" Text="{Binding SpeedString}" Foreground="{DynamicResource TextFillColorSecondaryBrush}" HorizontalAlignment="Right"/>
+            </Grid>
+
+            <!-- Cancel Button -->
+            <ui:Button Grid.Row="4" Content="Cancel" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,15,0,0" Command="{Binding CancelOperationCommand}"/>
+        </Grid>
+    </Grid>
+</ui:FluentWindow>

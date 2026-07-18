@@ -306,6 +306,26 @@ namespace Vcrypt.Core.Services
             }
         }
 
+        public async Task<string> ComputeHashForEncryptedBlobAsync(EncryptedItemModel file)
+        {
+            if (!IsUnlocked) return string.Empty;
+            string sourceBlob = Path.Combine(_vaultPath, file.BlobId + ".vcrypt");
+            if (!File.Exists(sourceBlob)) return string.Empty;
+
+            using var sha256 = SHA256.Create();
+            using var aes = Aes.Create();
+            aes.Key = _encryptionKey;
+            
+            using var fsIn = new FileStream(sourceBlob, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, true);
+            byte[] iv = new byte[aes.BlockSize / 8];
+            await fsIn.ReadAsync(iv, 0, iv.Length);
+            aes.IV = iv;
+
+            using var cs = new CryptoStream(fsIn, aes.CreateDecryptor(), CryptoStreamMode.Read);
+            var hashBytes = await sha256.ComputeHashAsync(cs);
+            return BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
+        }
+
         public async Task CreateFolderAsync(string folderName, string parentPath = "")
         {
             if (!IsUnlocked || CurrentIndex == null) return;

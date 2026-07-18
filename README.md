@@ -8,6 +8,7 @@ Vcrypt is a premium, open-source Windows desktop application that turns any stan
 - **On-the-Fly AES-256 Encryption:** Files are not just hidden; dropping them into the `Z:` drive instantly encrypts them block-by-block in real-time.
 - **Zero UAC Spam:** Engineered with a unified administrator manifest to handle complex disk operations silently without bothering the user.
 - **True Portability:** Vcrypt copies its own standalone `.exe` to the public side of your USB drive, allowing you to plug it into any Windows PC and unlock your vault instantly without installing dependencies.
+- **Local AI Assistant:** Features a fully offline, local AI chat assistant powered by a quantized Llama model to help you manage your secure files. Download the model from [Hugging Face](https://huggingface.co/vijaymachkuri/gem-AI) directly within the app.
 
 ---
 

@@ -51,6 +51,7 @@ namespace Vcrypt.Core.Interfaces
         void Lock();
         Task EncryptFileAsync(string sourcePath, string targetParentPath = "", IProgress<CopyProgressReport>? progress = null, CopyProgressReport? state = null, Func<string, bool, Task<DuplicateResolution>>? onDuplicateFound = null);
         Task DecryptFileAsync(EncryptedItemModel file, string destinationDirectory);
+        Task<string> ComputeHashForEncryptedBlobAsync(EncryptedItemModel file);
         Task DeleteItemAsync(EncryptedItemModel item);
         Task CreateFolderAsync(string folderName, string parentPath = "");
     }
